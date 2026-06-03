@@ -402,6 +402,7 @@
     const [sheet,setSheet]=useState(null);
     const [recon,setRecon]=useState(false);
     const [importing,setImporting]=useState(false);
+    const [imp,setImp]=useState(false);
     const [page,setPage]=useState(0);
     const PAGE_SIZE=10;
     const [xls,setXls]=useState(false);
@@ -510,21 +511,17 @@
     const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
     const zeroBills=useMemo(()=> billRows.filter(b=> b.amount<=0).length,[billRows]);
 
-    async function importSales(){
+    async function importSales(assignTo){
       if(!pending.length){ toast("No new bills to import"); return; }
-      setImporting(true);
-      try{
-        const rows=pending.map(b=>({
-          entry_type:"income", amount:b.amount, category:"Sales", mode:"bill",
-          ref:String(b.id), note:"Bill "+(b.bill_no?("#"+b.bill_no):"(no number)"),
-          entry_date:b.date||todayISO(), source:"bill",
-          created_by: b.added_by || meEmail }));   // attribute sale to the staff who made the bill
-        const { error } = await sb.from("mh_ledger").insert(rows);
-        if(error) throw error;
-        toast("Imported "+rows.length+" sale"+(rows.length>1?"s":""));
-        await load();
-      }catch(err){ toastErr(err.message||"Import failed"); }
-      setImporting(false);
+      const rows=pending.map(b=>({
+        entry_type:"income", amount:b.amount, category:"Sales", mode:"bill",
+        ref:String(b.id), note:"Bill "+(b.bill_no?("#"+b.bill_no):"(no number)"),
+        entry_date:b.date||todayISO(), source:"bill",
+        created_by: assignTo || b.added_by || meEmail }));   // override, else bill's original staff
+      const { error } = await sb.from("mh_ledger").insert(rows);
+      if(error) throw error;
+      toast("Imported "+rows.length+" sale"+(rows.length>1?"s":""));
+      await load();
     }
 
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
@@ -570,7 +567,7 @@
         <div class="between">
           <div><b>Sales from bills</b>
             <div class="tiny muted">On record ${money(liveSales)} · imported ${money(importedSales)}</div></div>
-          ${pending.length>0 && html`<button class="btn sm" disabled=${importing||!online} onClick=${importSales}>${importing?html`<span class="spin"></span>`:("Import "+pending.length)}</button>`}
+          ${pending.length>0 && html`<button class="btn sm" disabled=${!online} onClick=${()=>setImp(true)}>Import ${pending.length}</button>`}
         </div>
         ${(liveSales!==importedSales || zeroBills>0) && html`<button class="btn ghost sm" style=${{width:'100%',marginTop:10}} onClick=${()=>setRecon(true)}>🔎 Reconcile ${billRows.length} bills${zeroBills?(" · "+zeroBills+" show ₹0"):""}</button>`}
       </div></div>`}
@@ -620,6 +617,9 @@
     ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} live=${liveSales} imported=${importedSales} onClose=${()=>setRecon(false)}/>`}
     ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}
+    ${imp && html`<${ImportSalesSheet} count=${pending.length} total=${pending.reduce((s,b)=>s+b.amount,0)}
+        isAdmin=${isAdmin} users=${users} meEmail=${meEmail}
+        onClose=${()=>setImp(false)} onConfirm=${importSales} onDone=${()=>setImp(false)}/>`}
     `;
   }
 
@@ -671,6 +671,36 @@
             Recorded by <b style=${{color:'var(--ink)'}}>${dispName(meEmail,userMap)}</b></div>`}
       <div style=${{height:14}}></div>
       <button class="btn" disabled=${busy||num(amt)<=0} onClick=${save}>${busy?"Saving…":"Save "+kind}</button>
+    </${Sheet}>`;
+  }
+
+  /* ---- Confirm/attribute sales import ---- */
+  function ImportSalesSheet({count,total,isAdmin,users,meEmail,onClose,onConfirm,onDone}){
+    const [assign,setAssign]=useState("original");   // "original" | <email>
+    const [busy,setBusy]=useState(false);
+    async function go(){
+      setBusy(true);
+      try{ await onConfirm(assign==="original"?null:assign); onDone&&onDone(); }
+      catch(e){ toastErr(e.message||"Import failed"); setBusy(false); }
+    }
+    return html`<${Sheet} onClose=${onClose} title="Import sales from bills">
+      <div class="stats" style=${{marginTop:4}}>
+        <div class="stat"><div class="k">New bills</div><div class="v">${count}</div></div>
+        <div class="stat green"><div class="k">Total</div><div class="v">${money(total)}</div></div>
+      </div>
+      <label>Attribute these sales to</label>
+      ${isAdmin
+        ? html`<div>
+            <select value=${assign} onChange=${e=>setAssign(e.target.value)}>
+              <option value="original">Each bill's original staff</option>
+              ${users.map(u=> html`<option key=${u.email} value=${u.email}>${initCap(u.display_name||u.email.split("@")[0])}${u.email===meEmail?" (you)":""}</option>`)}
+            </select>
+            <p class="tiny muted" style=${{marginTop:6}}>Default keeps each bill credited to whoever raised it. Choose a staff member to reassign all ${count} imported sales to that person instead.</p>
+          </div>`
+        : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--muted)',borderColor:'var(--line-strong)',fontWeight:500}}>
+            Credited to each bill's original staff. ${'\u00A0'}<span class="tiny">(Reassigning requires an admin.)</span></div>`}
+      <div style=${{height:14}}></div>
+      <button class="btn" disabled=${busy||count===0} onClick=${go}>${busy?html`<span class="spin"></span> Importing…`:("Import "+count+" sale"+(count===1?"":"s"))}</button>
     </${Sheet}>`;
   }
 
