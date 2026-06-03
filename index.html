@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Gavthan Manager — Ledger &amp; Inventory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f4ecdc; --surface:#fffdf7; --surface-2:#faf4e6;
+    --ink:#2a251d; --muted:#8b8071; --line:#e6dcc6; --line-strong:#d8cbb0;
+    --accent:#1f6f54; --accent-ink:#0f3c2d;
+    --debit:#b5492a; --credit:#1f6f54; --warn:#b07d11;
+    --shadow:0 1px 2px rgba(43,38,29,.06),0 8px 24px rgba(43,38,29,.07);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #fbf6ea 0%, rgba(251,246,234,0) 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"DM Sans",system-ui,sans-serif;
+    font-size:15px;line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  #root{max-width:520px;margin:0 auto;min-height:100vh}
+  h1,h2,h3{font-family:"Fraunces",Georgia,serif;font-weight:600;letter-spacing:-.01em;margin:0}
+  .wrap{padding:0 14px 96px}
+  .muted{color:var(--muted)}
+  .tiny{font-size:12px}
+  .nowrap{white-space:nowrap}
+  .row{display:flex;align-items:center;gap:10px}
+  .between{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .grow{flex:1;min-width:0}
+  .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* Header */
+  .topbar{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,#fffdf7,#fbf5e8);
+    border-bottom:1px solid var(--line);padding:12px 14px;display:flex;align-items:center;gap:10px}
+  .brand{display:flex;flex-direction:column;line-height:1.1}
+  .brand b{font-family:"Fraunces",serif;font-size:18px;font-weight:700}
+  .brand span{font-size:11px;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+  .crest{width:34px;height:34px;border-radius:9px;background:var(--accent);color:#fff;
+    display:grid;place-items:center;font-family:"Fraunces",serif;font-weight:700;font-size:18px;flex:0 0 auto}
+  .iconbtn{margin-left:auto;border:1px solid var(--line);background:var(--surface);border-radius:10px;
+    width:38px;height:38px;display:grid;place-items:center;font-size:16px;color:var(--ink);cursor:pointer}
+
+  /* Module switch */
+  .modtabs{display:flex;gap:6px;padding:12px 14px 0}
+  .modtab{flex:1;border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:11px 8px;
+    text-align:center;cursor:pointer;font-weight:600;font-size:14px;color:var(--muted);transition:.15s}
+  .modtab .e{font-size:18px;display:block;margin-bottom:2px}
+  .modtab.on{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:var(--shadow)}
+
+  /* Cards & summary */
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);margin-top:12px;overflow:hidden}
+  .card .hd{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .card .hd h3{font-size:16px}
+  .pad{padding:14px}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 13px;box-shadow:var(--shadow)}
+  .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .stat .v{font-family:"Fraunces",serif;font-size:22px;font-weight:600;margin-top:3px}
+  .stat.green .v{color:var(--credit)} .stat.red .v{color:var(--debit)} .stat.warn .v{color:var(--warn)}
+
+  /* List rows */
+  .lrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .lrow:last-child{border-bottom:0}
+  .lrow:active{background:var(--surface-2)}
+  .av{width:38px;height:38px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;
+    font-weight:700;color:#fff;font-size:14px;background:var(--accent)}
+  .av.sup{background:#8a5a2b}
+  .amt{font-family:"Fraunces",serif;font-weight:600;font-size:16px}
+  .amt.d{color:var(--debit)} .amt.c{color:var(--credit)}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);background:var(--surface-2)}
+  .pill.low{color:var(--debit);border-color:#e7c3b6;background:#fbece6}
+  .pill.ok{color:var(--credit);border-color:#bfe0d2;background:#eaf6f0}
+
+  /* Buttons / inputs */
+  button{font-family:inherit}
+  .btn{appearance:none;border:1px solid var(--accent);background:var(--accent);color:#fff;
+    padding:11px 14px;border-radius:11px;font-weight:600;font-size:14px;cursor:pointer;width:100%}
+  .btn.sec{background:var(--surface);color:var(--accent);border-color:var(--line-strong)}
+  .btn.ghost{background:transparent;color:var(--muted);border-color:var(--line)}
+  .btn.danger{background:#fff;color:var(--debit);border-color:#e7c3b6}
+  .btn.sm{width:auto;padding:8px 12px;font-size:13px;border-radius:9px}
+  .btn:disabled{opacity:.5}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 5px;text-transform:uppercase;letter-spacing:.03em}
+  input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--line-strong);border-radius:10px;
+    background:var(--surface-2);font-size:15px;font-family:inherit;color:var(--ink)}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;background:#fff}
+  .seg{display:flex;gap:6px}
+  .seg button{flex:1;border:1px solid var(--line-strong);background:var(--surface-2);border-radius:10px;padding:10px;font-weight:600;color:var(--muted);cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .seg.alt button.on{background:var(--debit);border-color:var(--debit)}
+  .search{position:relative;margin-top:12px}
+  .search input{padding-left:36px}
+  .search .ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.5}
+
+  /* FAB */
+  .fab{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:40;
+    width:min(492px,calc(100% - 28px))}
+  .fab .btn{box-shadow:0 10px 28px rgba(31,111,84,.35)}
+
+  /* Modal / sheet */
+  .scrim{position:fixed;inset:0;background:rgba(40,35,26,.42);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+  .sheet{background:var(--surface);width:100%;max-width:520px;border-radius:18px 18px 0 0;
+    max-height:92vh;overflow:auto;padding:6px 16px 26px;animation:up .22s ease}
+  @keyframes up{from{transform:translateY(20px);opacity:.6}to{transform:none;opacity:1}}
+  .handle{width:42px;height:4px;border-radius:99px;background:var(--line-strong);margin:8px auto 4px}
+  .sheet h2{font-size:20px;margin:6px 2px 2px}
+
+  /* Ledger entry line */
+  .entry{display:flex;align-items:flex-start;gap:10px;padding:11px 0;border-bottom:1px dashed var(--line)}
+  .entry:last-child{border-bottom:0}
+  .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:0 0 auto}
+  .dot.d{background:var(--debit)} .dot.c{background:var(--credit)}
+
+  .empty{text-align:center;color:var(--muted);padding:34px 16px}
+  .pager{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-top:1px solid var(--line)}
+  .pgnums{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
+  .pgn{min-width:30px;height:30px;border:1px solid var(--line-strong);background:var(--surface-2);border-radius:8px;
+    font-weight:600;font-size:13px;color:var(--muted);cursor:pointer}
+  .pgn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .empty .e{font-size:34px;display:block;margin-bottom:6px;opacity:.7}
+
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;z-index:80;
+    background:var(--ink);color:#fff;padding:10px 16px;border-radius:11px;font-size:13px;font-weight:600;
+    box-shadow:var(--shadow);max-width:90%;text-align:center}
+  .toast.err{background:var(--debit)}
+
+  .banner{background:#fbece6;color:var(--debit);border:1px solid #e7c3b6;border-radius:10px;
+    padding:9px 12px;font-size:13px;font-weight:600;margin-top:12px}
+  .banner.net{background:#fff3d6;color:var(--warn);border-color:#ecd9a3}
+
+  /* Login */
+  .login{max-width:380px;margin:0 auto;padding:48px 22px}
+  .login .crest{width:56px;height:56px;font-size:28px;border-radius:14px;margin:0 auto 14px}
+  .login h1{text-align:center;font-size:26px}
+  .login p.sub{text-align:center;color:var(--muted);margin:4px 0 22px;font-size:14px}
+  .spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;
+    display:inline-block;animation:sp .7s linear infinite;vertical-align:-3px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- =========================================================
+     CONFIG — paste the SAME values used in your Gavthan app.
+     This app talks to the SAME Supabase project.
+     ========================================================= -->
+<script>
+  window.GH_CONFIG = {
+    supabaseUrl:     "https://glaksnwcmiijiztsncvi.supabase.co",
+    supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
+    hotelName:       "Gavthan",
+    currency:        "\u20B9"                              // ₹
+  };
+</script>
+
+<script>
+  // Records any CDN script that fails to download, and turns a blank page into a readable message.
+  window.__loadErrors = [];
+  window.__libFail = function(n){ window.__loadErrors.push(n); };
+  window.addEventListener("error", function(e){
+    var root = document.getElementById("root");
+    if(root && !root.firstChild){
+      root.innerHTML =
+        '<div style="max-width:440px;margin:46px auto;padding:24px;font-family:system-ui,sans-serif;color:#2a251d;background:#fffdf7;border:1px solid #e6dcc6;border-radius:14px">'
+        + '<h2 style="font-family:Georgia,serif;margin:0 0 8px">&#9888; Could not start the app</h2>'
+        + '<div style="color:#8b8071;font-size:14px;line-height:1.5">'+ (e.message||e.type||"Script error")
+        + '<br><br>Open the console (F12 &rarr; Console) and send me the red error text.</div></div>';
+    }
+  });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="__libFail('React')"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="__libFail('ReactDOM')"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3/dist/htm.umd.js" onerror="__libFail('htm')"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="__libFail('supabase-js')"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<script>
+"use strict";
+(function(){
+  function fatal(title, detail){
+    var root = document.getElementById("root");
+    root.innerHTML =
+      '<div style="max-width:440px;margin:46px auto;padding:24px;font-family:system-ui,sans-serif;color:#2a251d;background:#fffdf7;border:1px solid #e6dcc6;border-radius:14px">'
+      + '<h2 style="font-family:Georgia,serif;margin:0 0 8px">&#9888; '+title+'</h2>'
+      + '<div style="color:#8b8071;font-size:14px;line-height:1.55">'+detail+'</div></div>';
+  }
+  // Pre-flight: make sure every library actually loaded before we touch it.
+  var miss=[];
+  if(typeof React==="undefined") miss.push("React");
+  if(typeof ReactDOM==="undefined") miss.push("ReactDOM");
+  if(typeof htm==="undefined") miss.push("htm");
+  if(typeof window.supabase==="undefined" || !window.supabase.createClient) miss.push("supabase-js");
+  if((window.__loadErrors&&window.__loadErrors.length) || miss.length){
+    var bad = (window.__loadErrors||[]).concat(miss).filter(function(v,i,a){return a.indexOf(v)===i;});
+    fatal("A required library didn't load",
+      "Missing: <b>"+bad.join(", ")+"</b>.<br><br>This is almost always the network blocking the CDN. "
+      + "Try a different network (e.g. mobile data) to confirm, then tell me and I can self-host the libraries inside the file.");
+    return;
+  }
+  var C = window.GH_CONFIG || {};
+  if(!C.supabaseUrl || C.supabaseUrl.indexOf("YOUR-PROJECT")>=0 || !C.supabaseAnonKey || C.supabaseAnonKey.indexOf("PASTE_")>=0){
+    fatal("Supabase keys not set",
+      "Edit the <b>GH_CONFIG</b> block near the bottom of this file, paste your project URL and the legacy anon (eyJ&hellip;) key, then re-deploy to GitHub.");
+    return;
+  }
+
+  const { useState, useEffect, useMemo, useRef, useCallback } = React;
+  const html = htm.bind(React.createElement);
+  const CFG = window.GH_CONFIG || {};
+  const CUR = CFG.currency || "\u20B9";
+  const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
+
+  /* ---------- helpers ---------- */
+  const money = (n)=> CUR + (Math.round((Number(n)||0)*100)/100).toLocaleString("en-IN");
+  const abs = (n)=> money(Math.abs(Number(n)||0));
+  const initials = (s)=> (String(s||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("")||"?").toUpperCase();
+  const todayISO = ()=> new Date().toISOString().slice(0,10);
+  const fmtDate = (d)=>{ if(!d) return ""; const x=new Date(d); return isNaN(x)?String(d):x.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}); };
+  const fmtDT = (d)=>{ if(!d) return ""; const x=new Date(d); return isNaN(x)?String(d):x.toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); };
+  const num = (v)=>{ const n=Number(v); return isNaN(n)?0:n; };
+  const initCap = (s)=> String(s||"").replace(/\b\w/g, c=>c.toUpperCase());
+  // resolve a creator key (email) to a display name using the users map
+  const dispName = (key, map)=>{
+    if(!key) return "";
+    if(map && map[key]) return map[key];
+    return key.indexOf("@")>=0 ? initCap(key.split("@")[0]) : key;
+  };
+
+  // Bill total — EXACT copy of the billing app's finalTotal():
+  //   finalTotal = sum(price*qty) - discountAmt + adjustAmt
+  //   discount only if discount_on && discount_pct>0 ; adjustment only if adjustment_on
+  function billTotal(c){
+    if(!c) return 0;
+    let items = c.items;
+    if (typeof items === "string"){ try{ items = JSON.parse(items); }catch(e){ items = []; } }
+    if (!Array.isArray(items)) items = [];
+    const raw  = items.reduce((s,i)=> s + num(i.price)*num(i.qty), 0);
+    const disc = (c.discount_on && num(c.discount_pct)>0) ? Math.round(raw*num(c.discount_pct)/100) : 0;
+    const adj  = c.adjustment_on ? num(c.adjustment) : 0;
+    return raw - disc + adj;
+  }
+  // Revenue counts ONLY bills the billing app marks settled — same rule as Total Rev.
+  const isSettled = (c)=> !!(c && c.status === "settled");
+  const custKey = (c)=> (c && (c.phone && String(c.phone).trim())) || ("name:"+String((c&&c.name)||"").trim().toLowerCase());
+
+  /* ---------- tiny toast ---------- */
+  let toastFn = ()=>{};
+  function useToast(){
+    const [t,setT]=useState(null);
+    useEffect(()=>{ toastFn=(msg,err)=>{ setT({msg,err}); setTimeout(()=>setT(null), err?3500:2200); }; },[]);
+    return t && html`<div class=${"toast"+(t.err?" err":"")}>${t.msg}</div>`;
+  }
+  const toast=(m)=>toastFn(m,false), toastErr=(m)=>toastFn(m,true);
+
+  /* =====================================================================
+     APP ROOT
+     ===================================================================== */
+  function App(){
+    const [boot,setBoot]=useState(true);
+    const [session,setSession]=useState(null);
+    const [me,setMe]=useState(null);
+    const [module,setModule]=useState("ledger");
+    const [online,setOnline]=useState(navigator.onLine);
+    const toastEl=useToast();
+
+    useEffect(()=>{
+      const on=()=>setOnline(true), off=()=>setOnline(false);
+      window.addEventListener("online",on); window.addEventListener("offline",off);
+      return ()=>{ window.removeEventListener("online",on); window.removeEventListener("offline",off); };
+    },[]);
+
+    useEffect(()=>{
+      sb.auth.getSession().then(({data})=>{ setSession(data.session||null); setBoot(false); });
+      const { data:sub } = sb.auth.onAuthStateChange((_e,s)=>setSession(s||null));
+      return ()=> sub.subscription.unsubscribe();
+    },[]);
+
+    // load mh_users profile (role/active) after login
+    useEffect(()=>{
+      if(!session){ setMe(null); return; }
+      (async()=>{
+        try{
+          const email = session.user.email;
+          const { data } = await sb.from("mh_users").select("*").eq("email",email).maybeSingle();
+          setMe(data || { email, role:"staff", active:true });
+        }catch(e){ setMe({ email:session.user.email, role:"staff", active:true }); }
+      })();
+    },[session]);
+
+    if(boot) return html`<div class="login"><div class="crest">${(CFG.hotelName||"G")[0]}</div><p class="sub">Loading…</p></div>`;
+    if(!session) return html`<${Login} />${toastEl}`;
+    if(me && me.active===false)
+      return html`<div class="login"><h1>Account disabled</h1><p class="sub">Ask an admin to re-enable your login.</p><button class="btn sec" onClick=${()=>sb.auth.signOut()}>Sign out</button></div>`;
+
+    return html`
+      <${Header} me=${me} module=${module} />
+      ${!online && html`<div class="wrap" style=${{paddingBottom:0}}><div class="banner net">⚠ Offline — changes will fail until reconnected.</div></div>`}
+      <div class="modtabs">
+        <div class=${"modtab"+(module==="ledger"?" on":"")} onClick=${()=>setModule("ledger")}>
+          <span class="e">📒</span>Ledger</div>
+        <div class=${"modtab"+(module==="inventory"?" on":"")} onClick=${()=>setModule("inventory")}>
+          <span class="e">📦</span>Inventory</div>
+      </div>
+      ${module==="ledger" ? html`<${Ledger} me=${me} online=${online}/>` : html`<${Inventory} me=${me} online=${online}/>`}
+      ${toastEl}
+    `;
+  }
+
+  function Header({me,module}){
+    return html`<div class="topbar">
+      <div class="crest">${(CFG.hotelName||"G")[0]}</div>
+      <div class="brand"><b>${CFG.hotelName||"Gavthan"} Manager</b>
+        <span>${module==="ledger"?"Khata · Receivables & Payables":"Stock · Inventory control"}</span></div>
+      <button class="iconbtn" title=${"Sign out ("+(me?me.email:"")+")"} onClick=${()=>{ if(confirm("Sign out?")) sb.auth.signOut(); }}>⎋</button>
+    </div>`;
+  }
+
+  /* =====================================================================
+     LOGIN  (reuses Supabase auth + your existing mh_users)
+     ===================================================================== */
+  function Login(){
+    const [email,setEmail]=useState(""); const [pw,setPw]=useState("");
+    const [busy,setBusy]=useState(false); const [err,setErr]=useState("");
+    async function submit(e){
+      e&&e.preventDefault(); setErr(""); setBusy(true);
+      const { error } = await sb.auth.signInWithPassword({ email:email.trim(), password:pw });
+      setBusy(false);
+      if(error) setErr(error.message||"Login failed");
+    }
+    return html`<form class="login" onSubmit=${submit}>
+      <div class="crest">${(CFG.hotelName||"G")[0]}</div>
+      <h1>${CFG.hotelName||"Gavthan"} Manager</h1>
+      <p class="sub">Ledger &amp; Inventory · sign in with your staff account</p>
+      ${err && html`<div class="banner">${err}</div>`}
+      <label>Email</label>
+      <input type="email" value=${email} autoComplete="username" onChange=${e=>setEmail(e.target.value)} placeholder="you@hotel.com"/>
+      <label>Password</label>
+      <input type="password" value=${pw} autoComplete="current-password" onChange=${e=>setPw(e.target.value)} placeholder="••••••••"/>
+      <div style=${{height:18}}></div>
+      <button class="btn" disabled=${busy||!email||!pw}>${busy?html`<span class="spin"></span> Signing in…`:"Sign in"}</button>
+      <p class="tiny muted" style=${{marginTop:16,textAlign:"center"}}>Same login as your billing app. New staff must be added by an admin.</p>
+    </form>`;
+  }
+
+  /* =====================================================================
+     LEDGER MODULE — simple income / expense cashbook
+       income  = money IN  (Sales from bills, Investment, Other)  → green +
+       expense = money OUT (manual entry: amount, category, note)  → red −
+       every entry is auto-stamped with the creator's name.
+     ===================================================================== */
+  const INCOME_CATS  = ["Sales","Investment","Other income"];
+  const EXPENSE_CATS = ["Supplies / Purchase","Salary / Wages","Rent","Utilities","Gas / Fuel","Equipment","Repairs","Marketing","Transport","Misc"];
+  const CAT_EMOJI = { "Sales":"🧾","Investment":"💰","Other income":"➕","Supplies / Purchase":"🛒","Salary / Wages":"👤","Rent":"🏠","Utilities":"💡","Gas / Fuel":"🔥","Equipment":"🔧","Repairs":"🛠","Marketing":"📣","Transport":"🚚","Misc":"📦" };
+
+  function monthLabel(m){
+    if(!m) return ""; const p=m.split("-");
+    const d=new Date(Number(p[0]),Number(p[1])-1,1);
+    return d.toLocaleDateString("en-IN",{month:"long",year:"numeric"});
+  }
+
+  // Parse a spreadsheet cell into YYYY-MM-DD (handles Excel serials, Date objects, dd/mm/yyyy, ISO).
+  function parseDate(v){
+    const p2=(n)=>String(n).padStart(2,"0");
+    if(v==null||v==="") return "";
+    if(v instanceof Date && !isNaN(v)) return v.getFullYear()+"-"+p2(v.getMonth()+1)+"-"+p2(v.getDate());
+    if(typeof v==="number"){ const d=new Date(Math.round((v-25569)*86400000)); return isNaN(d)?"":(d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())); }
+    const s=String(v).trim();
+    let m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);   // dd/mm/yyyy (Indian convention)
+    if(m){ let dd=+m[1],mm=+m[2],yy=+m[3]; if(yy<100) yy+=2000; const d=new Date(yy,mm-1,dd); return isNaN(d)?"":(d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())); }
+    const d=new Date(s); return isNaN(d)?"":(d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate()));
+  }
+
+  function Ledger({me,online}){
+    const meEmail = (me && me.email) || "staff";
+    const isAdmin = !!(me && me.role==="admin");
+    const [entries,setEntries]=useState([]);
+    const [bills,setBills]=useState([]);
+    const [users,setUsers]=useState([]);
+    const [loading,setLoading]=useState(true);
+
+    // ----- advanced search state -----
+    const [mode,setMode]=useState("month");                 // all | month | year | dates
+    const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
+    const [year,setYear]=useState(String(new Date().getFullYear()));
+    const [dFrom,setDFrom]=useState(""); const [dTo,setDTo]=useState("");
+    const [staff,setStaff]=useState("all");
+    const [catF,setCatF]=useState("all");
+    const [kind,setKind]=useState("all");
+    const [q,setQ]=useState("");
+
+    const [sheet,setSheet]=useState(null);
+    const [recon,setRecon]=useState(false);
+    const [importing,setImporting]=useState(false);
+    const [page,setPage]=useState(0);
+    const PAGE_SIZE=10;
+    const [xls,setXls]=useState(false);
+
+    const load=useCallback(async()=>{
+      setLoading(true);
+      try{
+        const [e,c,u]=await Promise.all([
+          sb.from("mh_ledger").select("*").order("entry_date",{ascending:false}).order("created_at",{ascending:false}),
+          sb.from("mh_customers").select("*"),
+          sb.from("mh_users").select("*")
+        ]);
+        if(e.error) throw e.error;
+        setEntries(e.data||[]);
+        setBills((c.data||[]).filter(isSettled));
+        setUsers((u.data||[]).filter(x=>x.active!==false));
+      }catch(err){ toastErr(err.message||"Load failed"); }
+      setLoading(false);
+    },[]);
+    useEffect(()=>{ load(); },[load]);
+
+    const userMap=useMemo(()=>{ const m={}; users.forEach(u=>{ if(u.email) m[u.email]=initCap(u.display_name||u.email.split("@")[0]); }); return m; },[users]);
+    const kindOf=(e)=> e.entry_type==="expense"?"expense":"income";
+    const dateOf=(e)=> String(e.entry_date||e.created_at||"").slice(0,10);
+
+    const months=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,7)).filter(Boolean)); s.add(new Date().toISOString().slice(0,7)); return Array.from(s).sort().reverse(); },[entries]);
+    const years=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,4)).filter(Boolean)); s.add(String(new Date().getFullYear())); return Array.from(s).sort().reverse(); },[entries]);
+    // staff dropdown = active users + any creator key present in entries not already listed
+    const staffOpts=useMemo(()=>{
+      const opts=users.map(u=>({ value:u.email, label:initCap(u.display_name||u.email.split("@")[0]) }));
+      const known=new Set(opts.map(o=>o.value));
+      entries.forEach(e=>{ if(e.created_by && !known.has(e.created_by)){ known.add(e.created_by); opts.push({ value:e.created_by, label:dispName(e.created_by,userMap) }); } });
+      return opts.sort((a,b)=>a.label.localeCompare(b.label));
+    },[users,entries,userMap]);
+
+    const inPeriod=(d)=>{
+      if(mode==="all") return true;
+      if(mode==="month") return d.slice(0,7)===month;
+      if(mode==="year") return d.slice(0,4)===year;
+      if(mode==="dates"){ if(dFrom && d<dFrom) return false; if(dTo && d>dTo) return false; return true; }
+      return true;
+    };
+    const matchStaff=(e)=> staff==="all" || e.created_by===staff;
+    const matchCat=(e)=> catF==="all" || (e.category||"")===catF;
+    const matchText=(e)=> !q.trim() || (String(e.note||"")+" "+String(e.category||"")).toLowerCase().indexOf(q.trim().toLowerCase())>=0;
+
+    const catOpts=useMemo(()=>{
+      const s=new Set(); entries.forEach(e=>{ if(e.category) s.add(e.category); });
+      INCOME_CATS.concat(EXPENSE_CATS).forEach(c=>s.add(c));
+      return Array.from(s).sort();
+    },[entries]);
+
+    const periodEntries=useMemo(()=> entries.filter(e=> inPeriod(dateOf(e)) && matchStaff(e) && matchCat(e) && matchText(e)),[entries,mode,month,year,dFrom,dTo,staff,catF,q]);
+    const income = useMemo(()=> periodEntries.filter(e=>kindOf(e)==="income").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
+    const expense= useMemo(()=> periodEntries.filter(e=>kindOf(e)==="expense").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
+    const net = income-expense;
+    const shown=useMemo(()=> periodEntries.filter(e=> kind==="all"||kindOf(e)===kind),[periodEntries,kind]);
+
+    // ----- pagination (10 / page, same pattern as billing history) -----
+    const totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
+    const safePage=Math.min(page,totalPages-1);
+    const pageItems=useMemo(()=> shown.slice(safePage*PAGE_SIZE,(safePage+1)*PAGE_SIZE),[shown,safePage]);
+    useEffect(()=>{ setPage(0); },[mode,month,year,dFrom,dTo,staff,catF,kind,q]);
+    const pageBtns=useMemo(()=>{
+      const out=[]; let lo=Math.max(0,safePage-2), hi=Math.min(totalPages-1,lo+4); lo=Math.max(0,hi-4);
+      for(let p=lo;p<=hi;p++) out.push(p); return out;
+    },[safePage,totalPages]);
+
+    // ----- detailed export (.xlsx; respects current filters) -----
+    function exportData(){
+      if(!shown.length){ toast("Nothing to export"); return; }
+      const header=["Date","Type","Category","Description","Amount","Mode","Staff","Source","Recorded at","Ref"];
+      const aoa=[header]; let inc=0,exp=0;
+      shown.forEach(e=>{
+        const k=kindOf(e); if(k==="income") inc+=num(e.amount); else exp+=num(e.amount);
+        aoa.push([ dateOf(e), k, e.category||"", e.note||"", num(e.amount), e.mode||"",
+          dispName(e.created_by,userMap), e.source||"",
+          e.created_at?new Date(e.created_at).toLocaleString("en-IN"):"", e.ref||"" ]);
+      });
+      aoa.push([]); aoa.push(["Income","","","",inc]); aoa.push(["Expense","","","",exp]); aoa.push(["Net","","","",inc-exp]);
+      const tag = mode==="all"?"all": mode==="month"?month: mode==="year"?year: ((dFrom||"start")+"_"+(dTo||"now"));
+      if(typeof XLSX!=="undefined"){
+        const ws=XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"]=[{wch:12},{wch:9},{wch:16},{wch:32},{wch:11},{wch:8},{wch:16},{wch:9},{wch:20},{wch:10}];
+        const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Ledger");
+        XLSX.writeFile(wb,"gavthan-ledger-"+tag+".xlsx");
+        toast("Exported "+shown.length+" entries");
+      } else {
+        const esc=(v)=>{ const s=v==null?"":String(v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+        const blob=new Blob(["\ufeff"+aoa.map(r=>r.map(esc).join(",")).join("\n")],{type:"text/csv;charset=utf-8;"});
+        const url=URL.createObjectURL(blob); const a=document.createElement("a");
+        a.href=url; a.download="gavthan-ledger-"+tag+".csv"; document.body.appendChild(a); a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },120);
+        toast("Excel library unavailable — exported CSV");
+      }
+    }
+
+    const periodLabel = mode==="all"?"all time": mode==="month"?monthLabel(month): mode==="year"?year: (dFrom||dTo)?((dFrom?fmtDate(dFrom):"start")+" – "+(dTo?fmtDate(dTo):"now")):"selected dates";
+
+    // ----- sales reconciliation -----
+    const importedRefs=useMemo(()=>{ const s=new Set(); entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null) s.add(String(e.ref)); }); return s; },[entries]);
+    const billRows=useMemo(()=> bills.map(c=>({ id:c.id, bill_no:c.bill_no, name:c.name, added_by:c.added_by,
+      date:String(c.date||c.bill_time||c.settled_at||c.created_at||"").slice(0,10), amount:billTotal(c) })),[bills]);
+    const liveSales=useMemo(()=> billRows.reduce((s,b)=>s+b.amount,0),[billRows]);
+    const importedSales=useMemo(()=> entries.filter(e=>e.source==="bill").reduce((s,e)=>s+num(e.amount),0),[entries]);
+    const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
+    const zeroBills=useMemo(()=> billRows.filter(b=> b.amount<=0).length,[billRows]);
+
+    async function importSales(){
+      if(!pending.length){ toast("No new bills to import"); return; }
+      setImporting(true);
+      try{
+        const rows=pending.map(b=>({
+          entry_type:"income", amount:b.amount, category:"Sales", mode:"bill",
+          ref:String(b.id), note:"Bill "+(b.bill_no?("#"+b.bill_no):"(no number)"),
+          entry_date:b.date||todayISO(), source:"bill",
+          created_by: b.added_by || meEmail }));   // attribute sale to the staff who made the bill
+        const { error } = await sb.from("mh_ledger").insert(rows);
+        if(error) throw error;
+        toast("Imported "+rows.length+" sale"+(rows.length>1?"s":""));
+        await load();
+      }catch(err){ toastErr(err.message||"Import failed"); }
+      setImporting(false);
+    }
+
+    if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
+
+    return html`<div class="wrap">
+      <div class="card" style=${{marginTop:12}}><div class="pad">
+        <div class="seg" style=${{marginBottom:10}}>
+          ${[["all","All"],["month","Month"],["year","Year"],["dates","Dates"]].map(o=>
+            html`<button key=${o[0]} class=${mode===o[0]?"on":""} onClick=${()=>setMode(o[0])}>${o[1]}</button>`)}
+        </div>
+        ${mode==="month" && html`<select value=${month} onChange=${e=>setMonth(e.target.value)}>
+          ${months.map(m=> html`<option key=${m} value=${m}>${monthLabel(m)}</option>`)}</select>`}
+        ${mode==="year" && html`<select value=${year} onChange=${e=>setYear(e.target.value)}>
+          ${years.map(y=> html`<option key=${y} value=${y}>${y}</option>`)}</select>`}
+        ${mode==="dates" && html`<div class="row" style=${{gap:8}}>
+          <input type="date" value=${dFrom} onChange=${e=>setDFrom(e.target.value)}/>
+          <span class="muted tiny">to</span>
+          <input type="date" value=${dTo} onChange=${e=>setDTo(e.target.value)}/></div>`}
+        <label>Staff</label>
+        <select value=${staff} onChange=${e=>setStaff(e.target.value)}>
+          <option value="all">All staff</option>
+          ${staffOpts.map(o=> html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
+        </select>
+        <label>Category</label>
+        <select value=${catF} onChange=${e=>setCatF(e.target.value)}>
+          <option value="all">All categories</option>
+          ${catOpts.map(c=> html`<option key=${c} value=${c}>${(CAT_EMOJI[c]||"")+" "+c}</option>`)}
+        </select>
+        <div class="search" style=${{marginTop:10}}><span class="ic">🔍</span>
+          <input placeholder="Search description / category" value=${q} onChange=${e=>setQ(e.target.value)}/></div>
+      </div></div>
+
+      <div class="stats">
+        <div class="stat green"><div class="k">Income</div><div class="v">${money(income)}</div></div>
+        <div class="stat red"><div class="k">Expense</div><div class="v">${money(expense)}</div></div>
+      </div>
+      <div class="stat" style=${{marginTop:10}}>
+        <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+dispName(staff,userMap)):""}${catF!=="all"?(" · "+catF):""}</div>
+        <div class="v" style=${{color: net>=0?'var(--credit)':'var(--debit)'}}>${money(net)}</div>
+      </div>
+
+      ${(pending.length>0 || liveSales!==importedSales) && html`<div class="card"><div class="pad">
+        <div class="between">
+          <div><b>Sales from bills</b>
+            <div class="tiny muted">On record ${money(liveSales)} · imported ${money(importedSales)}</div></div>
+          ${pending.length>0 && html`<button class="btn sm" disabled=${importing||!online} onClick=${importSales}>${importing?html`<span class="spin"></span>`:("Import "+pending.length)}</button>`}
+        </div>
+        ${(liveSales!==importedSales || zeroBills>0) && html`<button class="btn ghost sm" style=${{width:'100%',marginTop:10}} onClick=${()=>setRecon(true)}>🔎 Reconcile ${billRows.length} bills${zeroBills?(" · "+zeroBills+" show ₹0"):""}</button>`}
+      </div></div>`}
+
+      ${isAdmin && html`<div class="card"><div class="pad between">
+        <div><b>Import from Excel</b><div class="tiny muted">Admin · Date · Description · User · Dr · Cr</div></div>
+        <button class="btn sec sm" onClick=${()=>setXls(true)}>⬆ Upload</button>
+      </div></div>`}
+
+      <div class="seg" style=${{marginTop:12}}>
+        <button class=${kind==="all"?"on":""} onClick=${()=>setKind("all")}>All</button>
+        <button class=${kind==="income"?"on":""} onClick=${()=>setKind("income")}>Income</button>
+        <button class=${kind==="expense"?"on":""} onClick=${()=>setKind("expense")}>Expense</button>
+      </div>
+
+      <div class="card" style=${{marginTop:12}}>
+        <div class="hd">
+          <h3 style=${{fontSize:14}}>${shown.length} entr${shown.length===1?"y":"ies"}${shown.length>PAGE_SIZE?(" · page "+(safePage+1)+"/"+totalPages):""}</h3>
+          ${shown.length>0 && html`<button class="btn ghost sm" onClick=${exportData} title="Download as Excel (.xlsx)">⬇ Export</button>`}
+        </div>
+        ${shown.length===0? html`<div class="empty"><span class="e">📒</span>No entries match this filter</div>`
+        : pageItems.map(e=> html`<div class="entry" key=${e.id} style=${{padding:"11px 14px"}}>
+            <span class=${"dot "+(kindOf(e)==="income"?"c":"d")}></span>
+            <div class="grow">
+              <div class="ell"><b>${e.note|| (kindOf(e)==="income"?"Income":"Expense")}</b></div>
+              <div class="tiny muted ell">
+                <span class="pill">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")}</span>
+                · ${fmtDate(dateOf(e))} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}
+              </div>
+            </div>
+            <div class=${"amt "+(kindOf(e)==="income"?"c":"d")}>${kindOf(e)==="income"?"+":"−"}${money(e.amount)}</div>
+          </div>`)}
+        ${shown.length>PAGE_SIZE && html`<div class="pager">
+          <button class="btn ghost sm" disabled=${safePage===0} onClick=${()=>setPage(Math.max(0,safePage-1))}>← Prev</button>
+          <div class="pgnums">
+            ${pageBtns.map(p=> html`<button key=${p} class=${"pgn"+(p===safePage?" on":"")} onClick=${()=>setPage(p)}>${p+1}</button>`)}
+          </div>
+          <button class="btn ghost sm" disabled=${safePage>=totalPages-1} onClick=${()=>setPage(Math.min(totalPages-1,safePage+1))}>Next →</button>
+        </div>`}
+      </div>
+    </div>
+
+    <div class="fab"><button class="btn" onClick=${()=>setSheet({kind:"expense"})}>＋ Add income / expense</button></div>
+
+    ${sheet && html`<${EntrySheet} kind0=${sheet.kind} meEmail=${meEmail} isAdmin=${isAdmin}
+        users=${users} userMap=${userMap} onClose=${()=>setSheet(null)} onSaved=${()=>{setSheet(null);load();}}/>`}
+    ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} live=${liveSales} imported=${importedSales} onClose=${()=>setRecon(false)}/>`}
+    ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
+        onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}
+    `;
+  }
+
+  function EntrySheet({kind0,meEmail,isAdmin,users,userMap,onClose,onSaved}){
+    const [kind,setKind]=useState(kind0||"expense");
+    const cats = kind==="income"?INCOME_CATS:EXPENSE_CATS;
+    const [amt,setAmt]=useState(""); const [cat,setCat]=useState(cats[0]);
+    const [desc,setDesc]=useState(""); const [date,setDate]=useState(todayISO());
+    const [mode,setMode]=useState("cash"); const [target,setTarget]=useState(meEmail);
+    const [busy,setBusy]=useState(false);
+    function switchKind(k){ setKind(k); setCat((k==="income"?INCOME_CATS:EXPENSE_CATS)[0]); }
+    async function save(){
+      const a=num(amt); if(a<=0) return; setBusy(true);
+      try{
+        const creator = isAdmin ? (target||meEmail) : meEmail;
+        const { error } = await sb.from("mh_ledger").insert({
+          entry_type:kind, amount:a, category:cat, note:desc.trim()||cat,
+          entry_date:date, mode: kind==="income"?mode:null, source:"manual", created_by:creator });
+        if(error) throw error;
+        toast(kind==="income"?"Income added":"Expense added"); onSaved();
+      }catch(err){ toastErr(err.message||"Save failed"); setBusy(false); }
+    }
+    return html`<${Sheet} onClose=${onClose} title="New entry">
+      <div class=${"seg"+(kind==="expense"?" alt":"")}>
+        <button class=${kind==="income"?"on":""} onClick=${()=>switchKind("income")}>Income</button>
+        <button class=${kind==="expense"?"on":""} onClick=${()=>switchKind("expense")}>Expense</button>
+      </div>
+      <label>Amount</label>
+      <input value=${amt} onChange=${e=>setAmt(e.target.value)} inputMode="decimal" autoFocus placeholder="0"/>
+      <label>Category</label>
+      <select value=${cat} onChange=${e=>setCat(e.target.value)}>
+        ${cats.map(c=> html`<option key=${c} value=${c}>${(CAT_EMOJI[c]||"")+" "+c}</option>`)}
+      </select>
+      <label>Date</label>
+      <input type="date" value=${date} onChange=${e=>setDate(e.target.value)}/>
+      <label>Description</label>
+      <input value=${desc} onChange=${e=>setDesc(e.target.value)} placeholder=${kind==="income"?"e.g. owner investment":"e.g. vegetables from market"}/>
+      ${kind==="income" && html`<div><label>Received via</label>
+        <select value=${mode} onChange=${e=>setMode(e.target.value)}>
+          <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank transfer</option>
+        </select></div>`}
+      ${isAdmin
+        ? html`<div><label>Recorded by (admin)</label>
+            <select value=${target} onChange=${e=>setTarget(e.target.value)}>
+              ${users.map(u=> html`<option key=${u.email} value=${u.email}>${initCap(u.display_name||u.email.split("@")[0])}${u.email===meEmail?" (you)":""}</option>`)}
+            </select>
+            <p class="tiny muted" style=${{marginTop:6}}>As admin you can log this entry on behalf of another staff member.</p></div>`
+        : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--muted)',borderColor:'var(--line-strong)',fontWeight:500}}>
+            Recorded by <b style=${{color:'var(--ink)'}}>${dispName(meEmail,userMap)}</b></div>`}
+      <div style=${{height:14}}></div>
+      <button class="btn" disabled=${busy||num(amt)<=0} onClick=${save}>${busy?"Saving…":"Save "+kind}</button>
+    </${Sheet}>`;
+  }
+
+  function ReconSheet({rows,importedRefs,live,imported,onClose}){
+    const sorted=[...rows].sort((a,b)=> (Number(a.bill_no)||0)-(Number(b.bill_no)||0));
+    return html`<${Sheet} onClose=${onClose} title="Sales reconciliation">
+      <div class="stats" style=${{marginTop:4}}>
+        <div class="stat"><div class="k">On record</div><div class="v">${money(live)}</div></div>
+        <div class="stat"><div class="k">Imported</div><div class="v">${money(imported)}</div></div>
+      </div>
+      ${live!==imported && html`<div class="banner">Difference ${money(Math.abs(live-imported))}. Rows in red read as ₹0 — the amount couldn't be parsed from that bill.</div>`}
+      <div class="tiny muted" style=${{margin:"12px 2px"}}>${rows.length} settled bills (oldest first)</div>
+      ${sorted.map(b=> html`<div class="entry" key=${b.id}>
+        <span class=${"dot "+(b.amount<=0?"d":"c")}></span>
+        <div class="grow">
+          <div><b>${b.bill_no?("#"+b.bill_no):"(no number)"}</b> <span class="tiny muted">${b.name||""}</span></div>
+          <div class="tiny muted">${fmtDate(b.date)} · ${importedRefs.has(String(b.id))?"imported":"not imported"}</div>
+        </div>
+        <div class="amt" style=${{color:b.amount<=0?'var(--debit)':'var(--ink)'}}>${money(b.amount)}</div>
+      </div>`)}
+    </${Sheet}>`;
+  }
+
+  /* ---- Admin: import a ledger spreadsheet (Date / Description / User / Dr / Cr) ---- */
+  function ExcelImportSheet({users,userMap,meEmail,onClose,onSaved}){
+    const [step,setStep]=useState("pick");          // pick | preview
+    const [fileName,setFileName]=useState("");
+    const [rows,setRows]=useState([]);
+    const [mapping,setMapping]=useState("dr_income"); // dr_income: Dr=income,Cr=expense  | cr_income: swapped
+    const [incCat,setIncCat]=useState("Other income");
+    const [expCat,setExpCat]=useState("Misc");
+    const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
+
+    const nameToEmail=useMemo(()=>{ const m={}; users.forEach(u=>{ if(u.display_name) m[String(u.display_name).toLowerCase().trim()]=u.email; if(u.email) m[String(u.email).toLowerCase().trim()]=u.email; }); return m; },[users]);
+    const resolveUser=(s)=>{ if(!s) return ""; const k=String(s).toLowerCase().trim(); return nameToEmail[k]||String(s).trim(); };
+
+    async function onFile(ev){
+      const f=ev.target.files && ev.target.files[0]; if(!f) return;
+      setErr("");
+      if(typeof XLSX==="undefined"){ setErr("Excel library didn't load. Check your connection and reload the page."); return; }
+      setFileName(f.name);
+      try{
+        const buf=await f.arrayBuffer();
+        const wb=XLSX.read(buf,{type:"array"});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,blankrows:false});
+        if(!aoa.length){ setErr("That sheet looks empty."); return; }
+        // locate the header row
+        let hi=0;
+        for(let i=0;i<Math.min(6,aoa.length);i++){
+          const r=(aoa[i]||[]).map(x=>String(x).toLowerCase());
+          if(r.some(c=>/date/.test(c)) && r.some(c=>/dr|debit|cr|credit|amount/.test(c))){ hi=i; break; }
+        }
+        const hdr=(aoa[hi]||[]).map(x=>String(x).toLowerCase().trim());
+        const find=(re)=> hdr.findIndex(c=>re.test(c));
+        const ci={ date:find(/date|dt/), desc:find(/desc|particular|narration|detail|note|remark/),
+          user:find(/account|user|staff|\bby\b|name|cashier|emp/), cat:find(/categ|head|group/),
+          dr:find(/^dr$|debit/), cr:find(/^cr$|credit/), amt:find(/amount|amt/) };
+        if(ci.dr<0 && ci.cr<0 && ci.amt<0){ setErr("Couldn't find a Dr/Cr or Amount column. Headers seen: "+hdr.filter(Boolean).join(", ")); return; }
+        const out=[];
+        for(let i=hi+1;i<aoa.length;i++){
+          const row=aoa[i]||[];
+          const date=parseDate(ci.date>=0?row[ci.date]:"");
+          const desc=ci.desc>=0?String(row[ci.desc]==null?"":row[ci.desc]).trim():"";
+          const user=ci.user>=0?String(row[ci.user]==null?"":row[ci.user]).trim():"";
+          const cat=ci.cat>=0?String(row[ci.cat]==null?"":row[ci.cat]).trim():"";
+          let dr=ci.dr>=0?num(row[ci.dr]):0, cr=ci.cr>=0?num(row[ci.cr]):0;
+          if(ci.dr<0 && ci.cr<0 && ci.amt>=0) dr=num(row[ci.amt]);
+          if(!date && !desc && !dr && !cr) continue;
+          out.push({date,desc,user,cat,dr,cr});
+        }
+        if(!out.length){ setErr("No data rows found below the header."); return; }
+        setRows(out); setStep("preview");
+      }catch(e){ setErr("Couldn't read the file: "+(e.message||e)); }
+    }
+
+    const drIsIncome = mapping==="dr_income";
+    const totals=useMemo(()=>{
+      let inc=0,exp=0,skip=0;
+      rows.forEach(r=>{
+        if(r.dr>0)(drIsIncome?inc+=r.dr:exp+=r.dr);
+        if(r.cr>0)(drIsIncome?exp+=r.cr:inc+=r.cr);
+        if(r.dr<=0&&r.cr<=0) skip++;
+      });
+      return {inc,exp,skip,net:inc-exp};
+    },[rows,drIsIncome]);
+
+    function buildEntries(){
+      const list=[];
+      rows.forEach(r=>{
+        const d=r.date||todayISO(); const creator=resolveUser(r.user)||meEmail;
+        const mk=(kind,amt)=>({ entry_type:kind, amount:amt, category: r.cat || (kind==="income"?incCat:expCat),
+          note:r.desc||r.cat||(kind==="income"?incCat:expCat), entry_date:d, mode:null, source:"excel", created_by:creator });
+        if(r.dr>0) list.push(mk(drIsIncome?"income":"expense", r.dr));
+        if(r.cr>0) list.push(mk(drIsIncome?"expense":"income", r.cr));
+      });
+      return list;
+    }
+
+    async function confirm(){
+      const list=buildEntries();
+      if(!list.length){ setErr("No valid amounts to import."); return; }
+      setBusy(true); setErr("");
+      try{
+        for(let i=0;i<list.length;i+=200){
+          const { error } = await sb.from("mh_ledger").insert(list.slice(i,i+200));
+          if(error) throw error;
+        }
+        toast("Imported "+list.length+" entries"); onSaved();
+      }catch(e){ setErr(e.message||"Import failed"); setBusy(false); }
+    }
+
+    return html`<${Sheet} onClose=${onClose} title="Import ledger from Excel">
+      ${err && html`<div class="banner">${err}</div>`}
+      ${step==="pick" ? html`<div>
+        <p class="tiny muted" style=${{margin:"4px 2px 12px"}}>Upload an .xlsx / .xls / .csv file. The first sheet should have a header row including <b>Date</b>, <b>Description</b>, <b>User</b>, and <b>Dr</b> / <b>Cr</b> (or a single Amount) columns. Column order doesn't matter.</p>
+        <label>Spreadsheet file</label>
+        <input type="file" accept=".xlsx,.xls,.csv" onChange=${onFile}/>
+        ${typeof XLSX==="undefined" && html`<div class="banner net" style=${{marginTop:12}}>Excel library still loading — if this persists, reload the page.</div>`}
+      </div>` : html`<div>
+        <div class="between" style=${{margin:"2px 2px 8px"}}>
+          <div class="tiny muted">📄 ${fileName} · ${rows.length} rows</div>
+          <button class="btn ghost sm" onClick=${()=>{setStep("pick");setRows([]);setFileName("");}}>Change file</button>
+        </div>
+        <label>Column mapping</label>
+        <div class="seg">
+          <button class=${drIsIncome?"on":""} onClick=${()=>setMapping("dr_income")}>Dr = Income</button>
+          <button class=${!drIsIncome?"on":""} onClick=${()=>setMapping("cr_income")}>Cr = Income</button>
+        </div>
+        <div class="row" style=${{gap:10}}>
+          <div class="grow"><label>Default income category</label>
+            <select value=${incCat} onChange=${e=>setIncCat(e.target.value)}>${INCOME_CATS.map(c=>html`<option key=${c} value=${c}>${c}</option>`)}</select></div>
+          <div class="grow"><label>Default expense category</label>
+            <select value=${expCat} onChange=${e=>setExpCat(e.target.value)}>${EXPENSE_CATS.map(c=>html`<option key=${c} value=${c}>${c}</option>`)}</select></div>
+        </div>
+        <p class="tiny muted" style=${{margin:"6px 2px 0"}}>Each row uses its own <b>Category</b> column when present; the defaults above fill in only where a row has none. Entries are attributed to the row's <b>Account</b> / user.</p>
+        <div class="stats" style=${{marginTop:12}}>
+          <div class="stat green"><div class="k">Income</div><div class="v">${money(totals.inc)}</div></div>
+          <div class="stat red"><div class="k">Expense</div><div class="v">${money(totals.exp)}</div></div>
+        </div>
+        <div class="tiny muted" style=${{margin:"12px 2px 4px"}}>Preview (first 8 of ${rows.length})${totals.skip?(" · "+totals.skip+" rows have no amount and will be skipped"):""}</div>
+        ${rows.slice(0,8).map((r,i)=> html`<div class="entry" key=${i}>
+          <div class="grow"><div class="ell"><b>${r.desc||"—"}</b></div>
+            <div class="tiny muted ell">${fmtDate(r.date)||"(no date)"} · ${dispName(resolveUser(r.user),userMap)||"unattributed"}${r.cat?html` · <span class="pill">${r.cat}</span>`:""}</div></div>
+          <div style=${{textAlign:"right"}}>
+            ${r.dr>0 && html`<div class="amt ${drIsIncome?"c":"d"}">Dr ${money(r.dr)}</div>`}
+            ${r.cr>0 && html`<div class="amt ${drIsIncome?"d":"c"}">Cr ${money(r.cr)}</div>`}
+          </div>
+        </div>`)}
+        <div class="banner net" style=${{marginTop:12}}>Re-running an import adds new rows. To redo, an admin can clear prior Excel imports in Supabase: <code>delete from mh_ledger where source='excel';</code></div>
+        <div style=${{height:12}}></div>
+        <button class="btn" disabled=${busy} onClick=${confirm}>${busy?"Importing…":"Import "+buildEntries().length+" entries"}</button>
+      </div>`}
+    </${Sheet}>`;
+  }
+
+  /* =====================================================================
+     INVENTORY MODULE
+     ===================================================================== */
+  function Inventory({me,online}){
+    const [items,setItems]=useState([]);
+    const [moves,setMoves]=useState([]);
+    const [suppliers,setSuppliers]=useState([]);
+    const [loading,setLoading]=useState(true);
+    const [q,setQ]=useState(""); const [filter,setFilter]=useState("all"); // all | low
+    const [edit,setEdit]=useState(null);   // item or {} for new
+    const [moveFor,setMoveFor]=useState(null);
+    const [history,setHistory]=useState(null);
+
+    const load=useCallback(async()=>{
+      setLoading(true);
+      try{
+        const [i,m,s]=await Promise.all([
+          sb.from("mh_inventory_items").select("*").order("name"),
+          sb.from("mh_stock_moves").select("*").order("created_at",{ascending:false}).limit(300),
+          sb.from("mh_parties").select("id,name").eq("type","supplier").order("name")
+        ]);
+        if(i.error) throw i.error;
+        setItems((i.data||[]).filter(x=>x.active!==false));
+        setMoves(m.data||[]);
+        setSuppliers(s.data||[]);
+      }catch(err){ toastErr(err.message||"Load failed"); }
+      setLoading(false);
+    },[]);
+    useEffect(()=>{ load(); },[load]);
+
+    const isLow=(it)=> num(it.reorder_level)>0 && num(it.qty)<=num(it.reorder_level);
+    const totalValue=useMemo(()=> items.reduce((s,it)=> s+num(it.qty)*num(it.cost_price),0),[items]);
+    const lowCount=useMemo(()=> items.filter(isLow).length,[items]);
+
+    const list=useMemo(()=>{
+      const s=q.trim().toLowerCase();
+      return items
+        .filter(it=> filter==="all" || isLow(it))
+        .filter(it=> !s || (it.name||"").toLowerCase().includes(s) || (it.category||"").toLowerCase().includes(s))
+        .sort((a,b)=> (isLow(b)-isLow(a)) || (a.name||"").localeCompare(b.name||""));
+    },[items,q,filter]);
+
+    if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading stock…</div></div></div>`;
+
+    return html`<div class="wrap">
+      <div class="stats">
+        <div class="stat"><div class="k">Stock value</div><div class="v">${money(totalValue)}</div></div>
+        <div class=${"stat"+(lowCount?" warn":"")}><div class="k">Low / out</div><div class="v">${lowCount}</div></div>
+      </div>
+
+      <div class="seg" style=${{marginTop:12}}>
+        <button class=${filter==="all"?"on":""} onClick=${()=>setFilter("all")}>All items (${items.length})</button>
+        <button class=${filter==="low"?"on":""} onClick=${()=>setFilter("low")}>Low stock (${lowCount})</button>
+      </div>
+      <div class="search"><span class="ic">🔍</span>
+        <input placeholder="Search items / category" value=${q} onChange=${e=>setQ(e.target.value)}/></div>
+
+      <div class="card" style=${{marginTop:12}}>
+        ${list.length===0 ? html`<div class="empty"><span class="e">📦</span>${items.length?"Nothing matches.":"No items yet. Add your first stock item."}</div>`
+        : list.map(it=> html`<div class="lrow" key=${it.id} onClick=${()=>setMoveFor(it)}>
+            <div class="grow">
+              <div class="row" style=${{gap:7}}><b class="ell">${it.name}</b>
+                ${isLow(it)? html`<span class="pill low">low</span>`: html`<span class="pill ok">ok</span>`}</div>
+              <div class="tiny muted ell">${it.category?it.category+" · ":""}${it.cost_price?money(it.cost_price)+"/"+(it.unit||"unit"):""}${num(it.reorder_level)>0?" · reorder @ "+num(it.reorder_level):""}</div>
+            </div>
+            <div style=${{textAlign:"right"}}>
+              <div class="amt" style=${{color:isLow(it)?'var(--debit)':'var(--ink)'}}>${num(it.qty)}</div>
+              <div class="tiny muted">${it.unit||"units"}</div>
+            </div>
+            <button class="btn ghost sm" style=${{width:36,padding:8}} onClick=${(e)=>{e.stopPropagation();setEdit(it);}}>✎</button>
+          </div>`)}
+      </div>
+
+      <div class="card"><div class="hd"><h3>Recent stock moves</h3>
+        <button class="btn ghost sm" onClick=${()=>setHistory(true)}>View all</button></div>
+        ${moves.slice(0,6).map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
+        ${moves.length===0 && html`<div class="empty"><span class="e">🗂</span>No movements recorded</div>`}
+      </div>
+    </div>
+
+    <div class="fab"><button class="btn" onClick=${()=>setEdit({})}>＋ New item</button></div>
+
+    ${edit && html`<${ItemSheet} item=${edit} suppliers=${suppliers} me=${me}
+        onClose=${()=>setEdit(null)} onSaved=${()=>{setEdit(null);load();}}/>`}
+    ${moveFor && html`<${MoveSheet} item=${moveFor} suppliers=${suppliers} me=${me}
+        onClose=${()=>setMoveFor(null)} onSaved=${()=>{setMoveFor(null);load();}}/>`}
+    ${history && html`<${Sheet} onClose=${()=>setHistory(false)} title="Stock movement history">
+        ${moves.length===0? html`<div class="empty">No movements</div>`
+          : moves.map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
+      </${Sheet}>`}
+    `;
+  }
+
+  const MOVE_META={ in:["+","c","Purchase / in"], out:["−","d","Used / out"], waste:["−","d","Wastage"], adjust:["±","","Adjustment"] };
+  function MoveRow({mv,items}){
+    const it=items.find(x=>x.id===mv.item_id);
+    const meta=MOVE_META[mv.move_type]||["","",mv.move_type];
+    return html`<div class="entry" style=${{padding:"11px 14px"}}>
+      <span class=${"dot "+(meta[1]||"c")} style=${{background: meta[1]==="d"?"var(--debit)":meta[1]==="c"?"var(--credit)":"var(--muted)"}}></span>
+      <div class="grow">
+        <div><b>${it?it.name:"(item)"}</b> <span class="tiny muted">— ${meta[2]}</span></div>
+        <div class="tiny muted">${fmtDT(mv.created_at||mv.move_date)}${mv.note?" · "+mv.note:""}${mv.created_by?" · "+mv.created_by:""}</div>
+      </div>
+      <div class="amt" style=${{color: meta[1]==="d"?"var(--debit)":meta[1]==="c"?"var(--credit)":"var(--ink)"}}>${meta[0]}${num(mv.qty)} ${it?it.unit||"":""}</div>
+    </div>`;
+  }
+
+  function ItemSheet({item,suppliers,me,onClose,onSaved}){
+    const isNew=!item.id;
+    const [f,setF]=useState({
+      name:item.name||"", category:item.category||"", unit:item.unit||"kg",
+      qty:item.qty!=null?String(item.qty):"0", reorder_level:item.reorder_level!=null?String(item.reorder_level):"0",
+      cost_price:item.cost_price!=null?String(item.cost_price):"", supplier_id:item.supplier_id||"" });
+    const [busy,setBusy]=useState(false);
+    const set=(k)=>(e)=> setF(o=>({...o,[k]:e.target.value}));
+    async function save(){
+      if(!f.name.trim()) return;
+      setBusy(true);
+      try{
+        const row={ name:f.name.trim(), category:f.category.trim()||null, unit:f.unit.trim()||"unit",
+          reorder_level:num(f.reorder_level), cost_price:num(f.cost_price)||0,
+          supplier_id:f.supplier_id||null, updated_at:new Date().toISOString() };
+        if(isNew){
+          row.qty=num(f.qty); row.created_by=me&&me.email; row.active=true;
+          const { error } = await sb.from("mh_inventory_items").insert(row); if(error) throw error;
+        } else {
+          // editing does NOT silently change stock count — use a stock move for that
+          const { error } = await sb.from("mh_inventory_items").update(row).eq("id",item.id); if(error) throw error;
+        }
+        toast(isNew?"Item added":"Item updated"); onSaved();
+      }catch(err){ toastErr(err.message||"Save failed"); setBusy(false); }
+    }
+    async function archive(){
+      if(!confirm("Archive “"+item.name+"”? It will be hidden but its history is kept.")) return;
+      setBusy(true);
+      try{ const { error } = await sb.from("mh_inventory_items").update({active:false}).eq("id",item.id); if(error) throw error;
+        toast("Archived"); onSaved(); }
+      catch(err){ toastErr(err.message); setBusy(false); }
+    }
+    return html`<${Sheet} onClose=${onClose} title=${isNew?"New item":"Edit item"}>
+      <label>Name</label><input value=${f.name} onChange=${set("name")} autoFocus/>
+      <div class="row" style=${{gap:10}}>
+        <div class="grow"><label>Category</label><input value=${f.category} onChange=${set("category")} placeholder="Grocery, Veg…"/></div>
+        <div style=${{width:110}}><label>Unit</label><input value=${f.unit} onChange=${set("unit")} placeholder="kg / L / pcs"/></div>
+      </div>
+      ${isNew && html`<div><label>Opening stock</label><input value=${f.qty} onChange=${set("qty")} inputMode="decimal"/></div>`}
+      <div class="row" style=${{gap:10}}>
+        <div class="grow"><label>Reorder level</label><input value=${f.reorder_level} onChange=${set("reorder_level")} inputMode="decimal"/></div>
+        <div class="grow"><label>Cost / ${f.unit||"unit"}</label><input value=${f.cost_price} onChange=${set("cost_price")} inputMode="decimal" placeholder="0"/></div>
+      </div>
+      <label>Supplier (optional)</label>
+      <select value=${f.supplier_id} onChange=${set("supplier_id")}>
+        <option value="">— none —</option>
+        ${suppliers.map(s=> html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+      </select>
+      ${!isNew && html`<p class="tiny muted" style=${{marginTop:10}}>To change the stock count, tap the item and record a movement instead — that keeps an audit trail.</p>`}
+      <div style=${{height:14}}></div>
+      <button class="btn" disabled=${busy||!f.name.trim()} onClick=${save}>${busy?"Saving…":isNew?"Add item":"Save changes"}</button>
+      ${!isNew && html`<button class="btn danger sm" style=${{width:"100%",marginTop:10}} disabled=${busy} onClick=${archive}>Archive item</button>`}
+    </${Sheet}>`;
+  }
+
+  function MoveSheet({item,suppliers,me,onClose,onSaved}){
+    const [type,setType]=useState("in");
+    const [qty,setQty]=useState(""); const [cost,setCost]=useState(item.cost_price?String(item.cost_price):"");
+    const [note,setNote]=useState(""); const [date,setDate]=useState(todayISO());
+    const [supplierLedger,setSupplierLedger]=useState(false);
+    const [busy,setBusy]=useState(false);
+    const supplier = suppliers.find(s=>s.id===item.supplier_id);
+    const cur=num(item.qty);
+    const q=num(qty);
+    const projected = type==="in"? cur+q : type==="adjust"? q : cur-q;
+
+    async function save(){
+      if(type!=="adjust" && q<=0){ return; }
+      setBusy(true);
+      try{
+        const delta = type==="in"? q : type==="adjust"? (q-cur) : -q;
+        // record the movement
+        const { error:e1 } = await sb.from("mh_stock_moves").insert({
+          item_id:item.id, move_type:type, qty: type==="adjust"? Math.abs(delta) : q,
+          unit_cost: type==="in"? (num(cost)||null) : null,
+          note: note.trim() || null, move_date:date, created_by:me&&me.email });
+        if(e1) throw e1;
+        // update item stock (+ latest cost on purchase)
+        const upd={ qty: Math.round(projected*1000)/1000, updated_at:new Date().toISOString() };
+        if(type==="in" && num(cost)>0) upd.cost_price=num(cost);
+        const { error:e2 } = await sb.from("mh_inventory_items").update(upd).eq("id",item.id);
+        if(e2) throw e2;
+        // optional: also post to supplier ledger as a purchase (credit = you owe them)
+        if(type==="in" && supplierLedger && item.supplier_id && num(cost)>0){
+          const amount=q*num(cost);
+          const { error:e3 } = await sb.from("mh_ledger").insert({
+            party_id:item.supplier_id, entry_type:"credit", amount, mode:"credit",
+            note:"Purchase: "+item.name+" ×"+q, entry_date:date, source:"manual", created_by:me&&me.email });
+          if(e3) throw e3;
+        }
+        toast("Stock updated"); onSaved();
+      }catch(err){ toastErr(err.message||"Save failed"); setBusy(false); }
+    }
+
+    return html`<${Sheet} onClose=${onClose} title=${item.name}>
+      <div class="between" style=${{margin:"2px 2px 6px"}}>
+        <span class="tiny muted">${item.category||""}</span>
+        <span class="tiny muted">Current: <b style=${{color:'var(--ink)'}}>${cur} ${item.unit||""}</b></span>
+      </div>
+      <label>Movement</label>
+      <div class="seg ${type==='out'||type==='waste'?'alt':''}">
+        ${[["in","Purchase"],["out","Used"],["waste","Waste"],["adjust","Set to"]].map(o=>
+          html`<button key=${o[0]} class=${type===o[0]?"on":""} onClick=${()=>setType(o[0])}>${o[1]}</button>`)}
+      </div>
+      <label>${type==="adjust"?"New counted stock":"Quantity"} (${item.unit||"unit"})</label>
+      <input value=${qty} onChange=${e=>setQty(e.target.value)} inputMode="decimal" autoFocus placeholder="0"/>
+      ${type==="in" && html`<div>
+        <label>Cost / ${item.unit||"unit"} (optional, updates item cost)</label>
+        <input value=${cost} onChange=${e=>setCost(e.target.value)} inputMode="decimal" placeholder="0"/>
+        ${item.supplier_id && html`<label class="row" style=${{textTransform:'none',letterSpacing:0,marginTop:12,gap:8,alignItems:'center'}}>
+          <input type="checkbox" style=${{width:18,height:18}} checked=${supplierLedger} onChange=${e=>setSupplierLedger(e.target.checked)}/>
+          <span>Also add ${money(q*num(cost))} to ${supplier?supplier.name:"supplier"}’s ledger</span></label>`}
+      </div>`}
+      <label>Date</label><input type="date" value=${date} onChange=${e=>setDate(e.target.value)}/>
+      <label>Note (optional)</label><input value=${note} onChange=${e=>setNote(e.target.value)} placeholder="invoice no, reason…"/>
+      <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
+        New stock: <b>${isNaN(projected)?cur:Math.round(projected*1000)/1000} ${item.unit||""}</b>
+      </div>
+      <div style=${{height:14}}></div>
+      <button class="btn" disabled=${busy||(type!=="adjust"&&q<=0)} onClick=${save}>${busy?"Saving…":"Record movement"}</button>
+    </${Sheet}>`;
+  }
+
+  /* ---------- generic bottom sheet ---------- */
+  function Sheet({title,onClose,children}){
+    useEffect(()=>{ const k=(e)=>{ if(e.key==="Escape") onClose(); }; window.addEventListener("keydown",k); return ()=>window.removeEventListener("keydown",k); },[onClose]);
+    return html`<div class="scrim" onClick=${onClose}>
+      <div class="sheet" onClick=${e=>e.stopPropagation()}>
+        <div class="handle"></div>
+        <div class="between"><h2>${title}</h2><button class="iconbtn" style=${{marginLeft:0}} onClick=${onClose}>✕</button></div>
+        <div style=${{height:6}}></div>
+        ${children}
+      </div>
+    </div>`;
+  }
+
+  try{
+    ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+  }catch(e){
+    fatal("App failed to start", String((e&&e.message)||e)+"<br><br>Please send me this message and the console error.");
+  }
+})();
+</script>
+</body>
+</html>
