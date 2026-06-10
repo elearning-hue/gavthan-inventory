@@ -122,6 +122,24 @@
   .dot.d{background:var(--debit)} .dot.c{background:var(--credit)}
 
   .empty{text-align:center;color:var(--muted);padding:34px 16px}
+  .lthead,.ltrow{display:grid;grid-template-columns:66px 1fr 56px 56px 50px;gap:0;align-items:stretch;border-bottom:1px solid var(--line)}
+  .lthead>*,.ltrow>*{display:flex;align-items:center;min-width:0;padding:10px 8px;border-right:1px solid var(--line-strong)}
+  .lthead>*:last-child,.ltrow>*:last-child{border-right:0}
+  .lthead>*{justify-content:center;text-align:center}
+  .lthead{font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:700;background:var(--surface-2);border-bottom:1px solid var(--line-strong)}
+  .ltrow:last-child{border-bottom:0}
+  .ltrow:active{background:var(--surface-2)}
+  .lt-date{font-size:10.5px;color:var(--muted);line-height:1.2;white-space:nowrap;overflow:hidden}
+  .lt-desc{flex-direction:column;align-items:flex-start;justify-content:center;gap:1px}
+  .lt-desc>*{max-width:100%}
+  .lt-desc b{font-size:13px}
+  .lt-desc .sub{font-size:10px;color:var(--muted)}
+  .lt-amt{justify-content:flex-end;font-family:"Fraunces",serif;font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lt-dr{color:var(--credit)} .lt-cr{color:var(--debit)}
+  .lt-setcell{justify-content:center}
+  .setbtn{width:100%;padding:5px 0;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface-2)}
+  .setbtn.yes{color:#fff;background:var(--credit);border-color:var(--credit)}
+  .setbtn.no{color:var(--debit);background:#fbece6;border-color:#e7c3b6}
   .pager{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-top:1px solid var(--line)}
   .pgnums{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
   .pgn{min-width:30px;height:30px;border:1px solid var(--line-strong);background:var(--surface-2);border-radius:8px;
@@ -403,6 +421,7 @@
     const [recon,setRecon]=useState(false);
     const [importing,setImporting]=useState(false);
     const [imp,setImp]=useState(false);
+    const [showImport,setShowImport]=useState(false);
     const [page,setPage]=useState(0);
     const PAGE_SIZE=10;
     const [xls,setXls]=useState(false);
@@ -524,6 +543,12 @@
       await load();
     }
 
+    async function setSettle(id,val){
+      setEntries(prev=> prev.map(x=> x.id===id?{...x,settled:val}:x));   // optimistic
+      const { error } = await sb.from("mh_ledger").update({ settled:val }).eq("id",id);
+      if(error){ toastErr(error.message||"Couldn't update"); setEntries(prev=> prev.map(x=> x.id===id?{...x,settled:!val}:x)); }
+    }
+
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
 
     return html`<div class="wrap">
@@ -572,7 +597,8 @@
         ${(liveSales!==importedSales || zeroBills>0) && html`<button class="btn ghost sm" style=${{width:'100%',marginTop:10}} onClick=${()=>setRecon(true)}>🔎 Reconcile ${billRows.length} bills${zeroBills?(" · "+zeroBills+" show ₹0"):""}</button>`}
       </div></div>`}
 
-      ${isAdmin && html`<div class="card"><div class="pad between">
+      ${isAdmin && html`<button class="btn ghost sm" style=${{width:'100%',marginTop:12}} onClick=${()=>setShowImport(v=>!v)}>${showImport?"▾ Hide Excel import":"▸ Import from Excel"}</button>`}
+      ${isAdmin && showImport && html`<div class="card" style=${{marginTop:8}}><div class="pad between">
         <div><b>Import from Excel</b><div class="tiny muted">Admin · Date · Description · User · Dr · Cr</div></div>
         <button class="btn sec sm" onClick=${()=>setXls(true)}>⬆ Upload</button>
       </div></div>`}
@@ -589,17 +615,23 @@
           ${shown.length>0 && html`<button class="btn ghost sm" onClick=${exportData} title="Download as Excel (.xlsx)">⬇ Export</button>`}
         </div>
         ${shown.length===0? html`<div class="empty"><span class="e">📒</span>No entries match this filter</div>`
-        : pageItems.map(e=> html`<div class="entry" key=${e.id} style=${{padding:"11px 14px"}}>
-            <span class=${"dot "+(kindOf(e)==="income"?"c":"d")}></span>
-            <div class="grow">
-              <div class="ell"><b>${e.note|| (kindOf(e)==="income"?"Income":"Expense")}</b></div>
-              <div class="tiny muted ell">
-                <span class="pill">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")}</span>
-                · ${fmtDate(dateOf(e))} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}
-              </div>
+        : html`<div>
+            <div class="lthead">
+              <span>Date</span><span>Description</span><span>Dr</span><span>Cr</span><span>Settle</span>
             </div>
-            <div class=${"amt "+(kindOf(e)==="income"?"c":"d")}>${kindOf(e)==="income"?"+":"−"}${money(e.amount)}</div>
-          </div>`)}
+            ${pageItems.map(e=>{ const isInc=kindOf(e)==="income"; const p=dateOf(e).split("-");
+              const dmy=p.length===3?(p[2]+"/"+p[1]+"/"+p[0].slice(2)):dateOf(e);
+              return html`<div class="ltrow" key=${e.id}>
+                <span class="lt-date">${dmy}</span>
+                <span class="lt-desc">
+                  <b class="ell">${e.note|| (isInc?"Income":"Expense")}</b>
+                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}</div>
+                </span>
+                <span class="lt-amt lt-dr">${isInc?money(e.amount):""}</span>
+                <span class="lt-amt lt-cr">${isInc?"":money(e.amount)}</span>
+                <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} onClick=${()=>setSettle(e.id, e.settled===false)}>${e.settled===false?"No":"Yes"}</button></span>
+              </div>`; })}
+          </div>`}
         ${shown.length>PAGE_SIZE && html`<div class="pager">
           <button class="btn ghost sm" disabled=${safePage===0} onClick=${()=>setPage(Math.max(0,safePage-1))}>← Prev</button>
           <div class="pgnums">
