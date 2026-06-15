@@ -530,9 +530,10 @@
     const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
     const zeroBills=useMemo(()=> billRows.filter(b=> b.amount<=0).length,[billRows]);
 
-    async function importSales(assignTo){
-      if(!pending.length){ toast("No new bills to import"); return; }
-      const rows=pending.map(b=>({
+    async function importSales(assignTo,subset){
+      const list = (subset && subset.length) ? subset : pending;
+      if(!list.length){ toast("No new bills to import"); return; }
+      const rows=list.map(b=>({
         entry_type:"income", amount:b.amount, category:"Sales", mode:"bill",
         ref:String(b.id), note:"Bill "+(b.bill_no?("#"+b.bill_no):"(no number)"),
         entry_date:b.date||todayISO(), source:"bill",
@@ -541,6 +542,7 @@
       if(error) throw error;
       toast("Imported "+rows.length+" sale"+(rows.length>1?"s":""));
       await load();
+      return rows.length;
     }
 
     async function setSettle(id,val){
@@ -650,7 +652,7 @@
     ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}
     ${imp && html`<${ImportSalesSheet} count=${pending.length} total=${pending.reduce((s,b)=>s+b.amount,0)}
-        isAdmin=${isAdmin} users=${users} meEmail=${meEmail}
+        bills=${pending} isAdmin=${isAdmin} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setImp(false)} onConfirm=${importSales} onDone=${()=>setImp(false)}/>`}
     `;
   }
@@ -707,19 +709,36 @@
   }
 
   /* ---- Confirm/attribute sales import ---- */
-  function ImportSalesSheet({count,total,isAdmin,users,meEmail,onClose,onConfirm,onDone}){
+  function ImportSalesSheet({count,total,bills,isAdmin,users,userMap,meEmail,onClose,onConfirm,onDone}){
+    const [tab,setTab]=useState("bulk");             // "bulk" | "one"
     const [assign,setAssign]=useState("original");   // "original" | <email>
+    const [perAssign,setPerAssign]=useState({});     // bill.id -> "original" | <email>
     const [busy,setBusy]=useState(false);
+    const [busyId,setBusyId]=useState(null);
     async function go(){
       setBusy(true);
       try{ await onConfirm(assign==="original"?null:assign); onDone&&onDone(); }
       catch(e){ toastErr(e.message||"Import failed"); setBusy(false); }
+    }
+    async function goOne(b){
+      setBusyId(b.id);
+      try{
+        const who=perAssign[b.id];
+        await onConfirm(who && who!=="original" ? who : null, [b]);
+      }catch(e){ toastErr(e.message||"Import failed"); }
+      setBusyId(null);
     }
     return html`<${Sheet} onClose=${onClose} title="Import sales from bills">
       <div class="stats" style=${{marginTop:4}}>
         <div class="stat"><div class="k">New bills</div><div class="v">${count}</div></div>
         <div class="stat green"><div class="k">Total</div><div class="v">${money(total)}</div></div>
       </div>
+      <div class="seg" style=${{marginTop:12}}>
+        <button class=${tab==="bulk"?"on":""} onClick=${()=>setTab("bulk")}>Import once</button>
+        <button class=${tab==="one"?"on":""} onClick=${()=>setTab("one")}>One by one</button>
+      </div>
+      ${tab==="bulk"
+        ? html`<div>
       <label>Attribute these sales to</label>
       ${isAdmin
         ? html`<div>
@@ -733,6 +752,23 @@
             Credited to each bill's original staff. ${'\u00A0'}<span class="tiny">(Reassigning requires an admin.)</span></div>`}
       <div style=${{height:14}}></div>
       <button class="btn" disabled=${busy||count===0} onClick=${go}>${busy?html`<span class="spin"></span> Importing…`:("Import "+count+" sale"+(count===1?"":"s"))}</button>
+          </div>`
+        : html`<div>
+            <p class="tiny muted" style=${{margin:"10px 2px"}}>Import each bill on its own${isAdmin?", choosing who it's credited to":""}. ${count} pending.</p>
+            ${count===0
+              ? html`<div class="empty"><span class="e">✅</span>All bills imported</div>`
+              : (bills||[]).map(b=> html`<div class="entry" key=${b.id}>
+                  <div class="grow">
+                    <div><b>${b.bill_no?("#"+b.bill_no):"(no number)"}</b> <span class="tiny muted">${b.name||""}</span></div>
+                    <div class="tiny muted">${fmtDate(b.date)} · ${money(b.amount)}</div>
+                    ${isAdmin && html`<select style=${{marginTop:6}} value=${perAssign[b.id]||"original"} onChange=${e=>setPerAssign(p=>({...p,[b.id]:e.target.value}))}>
+                        <option value="original">Original staff${b.added_by?(" ("+dispName(b.added_by,userMap)+")"):""}</option>
+                        ${users.map(u=> html`<option key=${u.email} value=${u.email}>${initCap(u.display_name||u.email.split("@")[0])}${u.email===meEmail?" (you)":""}</option>`)}
+                      </select>`}
+                  </div>
+                  <button class="btn sm" disabled=${busyId!=null} onClick=${()=>goOne(b)}>${busyId===b.id?html`<span class="spin"></span>`:"Import"}</button>
+                </div>`)}
+          </div>`}
     </${Sheet}>`;
   }
 
