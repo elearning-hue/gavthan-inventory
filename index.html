@@ -211,6 +211,21 @@
     display:inline-block;animation:sp .7s linear infinite;vertical-align:-3px}
   @keyframes sp{to{transform:rotate(360deg)}}
 
+  /* Live realtime badge */
+  .livebadge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--muted-2);padding:3px 9px;border-radius:999px;border:1px solid var(--line-strong);background:var(--surface-2)}
+  .livebadge.on{color:var(--credit);border-color:var(--green-border);background:var(--green-bg)}
+  .livedot{width:7px;height:7px;border-radius:50%;background:var(--muted-2);flex:0 0 auto}
+  .livebadge.on .livedot{background:var(--credit);box-shadow:0 0 0 0 rgba(31,111,84,.5);animation:pulse 1.8s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(31,111,84,.5)}70%{box-shadow:0 0 0 6px rgba(31,111,84,0)}100%{box-shadow:0 0 0 0 rgba(31,111,84,0)}}
+  .chart-wrap{width:100%;height:200px}
+  .recharts-cartesian-axis-tick text{fill:var(--muted)}
+  .perseg{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+  .perseg button{border:1px solid var(--line-strong);background:var(--surface-2);color:var(--muted);
+    border-radius:999px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;transition:.15s}
+  .perseg button:hover:not(.on){color:var(--ink);border-color:var(--accent)}
+  .perseg button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
   /* Responsive — widen into a framed app on tablet / desktop */
   @media (min-width:768px){
     body{padding:28px 20px}
@@ -258,6 +273,11 @@
 <script src="https://cdn.jsdelivr.net/npm/htm@3/dist/htm.umd.js" onerror="__libFail('htm')"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="__libFail('supabase-js')"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Recharts (UMD) for dashboard charts — depends on the React globals above.
+     OPTIONAL: failures are intentionally NOT routed through __libFail so they never
+     block app start; the dashboards detect a missing Recharts and degrade gracefully. -->
+<script src="https://cdn.jsdelivr.net/npm/prop-types@15/prop-types.min.js" onerror="window.__chartsFailed=true"></script>
+<script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js" onerror="window.__chartsFailed=true"></script>
 
 <script>
 "use strict";
@@ -314,6 +334,181 @@
   /* ---------- theme (light / dark) ---------- */
   const getTheme = ()=>{ try{ return localStorage.getItem("gh-theme")==="dark" ? "dark" : "light"; }catch(e){ return "light"; } };
   const applyTheme = (t)=>{ document.documentElement.setAttribute("data-theme", t==="dark"?"dark":"light"); try{ localStorage.setItem("gh-theme",t); }catch(e){} };
+
+  /* ---------- chart palette (reads live CSS tokens so charts follow the theme) ---------- */
+  function themeColors(){
+    const cs=getComputedStyle(document.documentElement);
+    const g=(n,f)=>{ const v=cs.getPropertyValue(n).trim(); return v||f; };
+    return { accent:g("--accent","#1f6f54"), debit:g("--debit","#b5492a"), credit:g("--credit","#1f6f54"),
+      warn:g("--warn","#b07d11"), muted:g("--muted","#6f6a62"), line:g("--line","#e8e2d6"), surface:g("--surface","#ffffff") };
+  }
+
+  /* ---------- Supabase Realtime ----------
+     Subscribe to Postgres change events on the given tables and fire `onChange`
+     (debounced) whenever a row is inserted / updated / deleted. This is the live
+     transport behind the dashboards — stock & ledger changes pushed from the
+     database arrive over Supabase's WebSocket channel and refresh the UI instantly. */
+  function useRealtime(tables, onChange){
+    const [live,setLive]=useState(false);
+    const cb=useRef(onChange); cb.current=onChange;
+    const key=tables.join("|");
+    useEffect(()=>{
+      let timer=null;
+      const ping=()=>{ clearTimeout(timer); timer=setTimeout(()=>{ cb.current && cb.current(); }, 250); };
+      const ch=sb.channel("rt-"+key.replace(/[^a-z0-9]+/gi,"-"));
+      tables.forEach(t=> ch.on("postgres_changes",{ event:"*", schema:"public", table:t }, ping));
+      ch.subscribe((status)=>{ setLive(status==="SUBSCRIBED"); });
+      return ()=>{ clearTimeout(timer); setLive(false); sb.removeChannel(ch); };
+    },[key]);
+    return live;
+  }
+
+  function LiveBadge({live}){
+    return html`<span class=${"livebadge"+(live?" on":"")} title=${live?"Live — realtime updates are on":"Connecting to realtime…"}>
+      <span class="livedot"></span>${live?"Live":"…"}</span>`;
+  }
+
+  // Compact tooltip styling shared by the charts, themed via CSS tokens.
+  function chartTooltip(C){
+    return { cursor:{ fill:"rgba(127,127,127,.08)" },
+      contentStyle:{ background:C.surface, border:"1px solid "+C.line, borderRadius:10, fontSize:12, boxShadow:"var(--shadow)" },
+      labelStyle:{ color:C.muted, fontWeight:600, marginBottom:2 } };
+  }
+
+  /* ---- Chart period selector (shared by the time-series dashboards) ---- */
+  const CHART_PERIODS = [
+    { key:"week",  label:"1W",  title:"last 7 days",    days:7,    unit:"day"   },
+    { key:"15",    label:"15D", title:"last 15 days",   days:15,   unit:"day"   },
+    { key:"month", label:"1M",  title:"last 30 days",   days:30,   unit:"day"   },
+    { key:"6m",    label:"6M",  title:"last 6 months",  months:6,  unit:"month" },
+    { key:"year",  label:"1Y",  title:"last 12 months", months:12, unit:"month" },
+  ];
+  const periodDef = (key)=> CHART_PERIODS.find(p=>p.key===key) || CHART_PERIODS[2];
+  // Build empty, ordered buckets for a period + a lookup map keyed by bucket id.
+  function chartBuckets(def){
+    const today=new Date(), buckets=[], map={};
+    if(def.unit==="day"){
+      for(let i=def.days-1;i>=0;i--){ const d=new Date(today); d.setDate(d.getDate()-i);
+        const key=d.toISOString().slice(0,10);
+        const b={ key, label:d.toLocaleDateString("en-IN",{day:"2-digit",month:"short"}) };
+        buckets.push(b); map[key]=b; }
+    } else {
+      for(let i=def.months-1;i>=0;i--){ const d=new Date(today.getFullYear(),today.getMonth()-i,1);
+        const key=d.toISOString().slice(0,7);
+        const b={ key, label:d.toLocaleDateString("en-IN",{month:"short",year:"2-digit"}) };
+        buckets.push(b); map[key]=b; }
+    }
+    return { buckets, map, unit:def.unit };
+  }
+  const bucketKey = (dateStr,unit)=> unit==="day" ? String(dateStr||"").slice(0,10) : String(dateStr||"").slice(0,7);
+
+  function PeriodSeg({value,onChange}){
+    return html`<div class="perseg">
+      ${CHART_PERIODS.map(p=> html`<button key=${p.key} class=${value===p.key?"on":""} title=${p.title} onClick=${()=>onChange(p.key)}>${p.label}</button>`)}
+    </div>`;
+  }
+
+  function ChartsUnavailable(){
+    return html`<div class="card"><div class="pad">
+      <div class="banner net">📊 Charts library didn't load (offline / CDN blocked). Your live totals and lists above still update in real time.</div>
+    </div></div>`;
+  }
+
+  /* ---- Ledger live dashboard: income vs expense over a chosen period ---- */
+  function LedgerDash({entries,live}){
+    if(typeof Recharts==="undefined") return html`<${ChartsUnavailable}/>`;
+    const [period,setPeriod]=useState("month");
+    const C=themeColors();
+    const { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } = Recharts;
+    const tip=chartTooltip(C);
+    const data=useMemo(()=>{
+      const def=periodDef(period); const { buckets, map, unit }=chartBuckets(def);
+      buckets.forEach(b=>{ b.income=0; b.expense=0; });
+      entries.forEach(e=>{ const b=map[bucketKey(e.entry_date||e.created_at, unit)]; if(!b) return;
+        if(e.entry_type==="expense") b.expense+=num(e.amount); else b.income+=num(e.amount); });
+      return buckets;
+    },[entries,period]);
+    const hasData = data.some(d=> d.income>0 || d.expense>0);
+    return html`<div class="card">
+      <div class="hd"><h3>Cashflow · ${periodDef(period).title}</h3><${LiveBadge} live=${live}/></div>
+      <div class="pad">
+        <${PeriodSeg} value=${period} onChange=${setPeriod}/>
+        ${!hasData
+          ? html`<div class="empty"><span class="e">📈</span>No entries in this period yet</div>`
+          : html`<div class="chart-wrap">
+              <${ResponsiveContainer} width="100%" height="100%">
+                <${BarChart} data=${data} margin=${{top:8,right:6,left:-14,bottom:0}} barGap=${2}>
+                  <${CartesianGrid} strokeDasharray="3 3" stroke=${C.line} vertical=${false}/>
+                  <${XAxis} dataKey="label" tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${{stroke:C.line}} minTickGap=${8}/>
+                  <${YAxis} tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${false} width=${42} tickFormatter=${(v)=>v>=1000?(v/1000)+"k":v}/>
+                  <${Tooltip} ...${tip} formatter=${(v,n)=>[money(v),n]}/>
+                  <${Legend} wrapperStyle=${{fontSize:11,paddingTop:4}}/>
+                  <${Bar} name="Income" dataKey="income" fill=${C.credit} radius=${[4,4,0,0]} maxBarSize=${22}/>
+                  <${Bar} name="Expense" dataKey="expense" fill=${C.debit} radius=${[4,4,0,0]} maxBarSize=${22}/>
+                </${BarChart}>
+              </${ResponsiveContainer}>
+            </div>`}
+      </div>
+    </div>`;
+  }
+
+  /* ---- Inventory live dashboard: stock levels (snapshot) + movement over a period ---- */
+  function InventoryDash({levels,moves,live}){
+    if(typeof Recharts==="undefined") return html`<${ChartsUnavailable}/>`;
+    const [period,setPeriod]=useState("week");
+    const C=themeColors();
+    const { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } = Recharts;
+    const tip=chartTooltip(C);
+    const activity=useMemo(()=>{
+      const def=periodDef(period); const { buckets, map, unit }=chartBuckets(def);
+      buckets.forEach(b=>{ b.in=0; b.out=0; });
+      moves.forEach(mv=>{ const b=map[bucketKey(mv.created_at||mv.move_date, unit)]; if(!b) return;
+        const qy=num(mv.qty);
+        if(mv.move_type==="in") b.in+=qy;
+        else if(mv.move_type==="out"||mv.move_type==="waste") b.out+=qy;
+        else if(mv.move_type==="adjust"){ if(qy>=0) b.in+=qy; else b.out+=Math.abs(qy); } });
+      return buckets;
+    },[moves,period]);
+    const hasActivity = activity.some(d=> d.in>0 || d.out>0);
+    return html`<div class="card">
+      <div class="hd"><h3>Live stock levels</h3><${LiveBadge} live=${live}/></div>
+      <div class="pad">
+        ${levels.length===0
+          ? html`<div class="empty"><span class="e">📦</span>No items yet</div>`
+          : html`<div class="chart-wrap">
+              <${ResponsiveContainer} width="100%" height="100%">
+                <${BarChart} data=${levels} margin=${{top:8,right:6,left:-14,bottom:0}}>
+                  <${CartesianGrid} strokeDasharray="3 3" stroke=${C.line} vertical=${false}/>
+                  <${XAxis} dataKey="name" tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${{stroke:C.line}} interval=${0} angle=${-18} textAnchor="end" height=${52}/>
+                  <${YAxis} tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${false} width=${34}/>
+                  <${Tooltip} ...${tip} formatter=${(v)=>[v,"qty"]}/>
+                  <${Bar} dataKey="qty" radius=${[4,4,0,0]} maxBarSize=${34}>
+                    ${levels.map((d,i)=> html`<${Cell} key=${i} fill=${d.low?C.debit:C.accent}/>`)}
+                  </${Bar}>
+                </${BarChart}>
+              </${ResponsiveContainer}>
+            </div>
+            <div class="tiny muted" style=${{margin:"8px 2px 2px"}}>Bars in red are at or below reorder level.</div>`}
+        <div class="tiny muted" style=${{margin:"16px 2px 8px",fontWeight:700,textTransform:"uppercase",letterSpacing:".05em"}}>Movement · ${periodDef(period).title}</div>
+        <${PeriodSeg} value=${period} onChange=${setPeriod}/>
+        ${!hasActivity
+          ? html`<div class="empty" style=${{padding:"18px 16px"}}>No stock movement in this period</div>`
+          : html`<div class="chart-wrap" style=${{height:170}}>
+              <${ResponsiveContainer} width="100%" height="100%">
+                <${BarChart} data=${activity} margin=${{top:6,right:6,left:-14,bottom:0}} barGap=${2}>
+                  <${CartesianGrid} strokeDasharray="3 3" stroke=${C.line} vertical=${false}/>
+                  <${XAxis} dataKey="label" tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${{stroke:C.line}} minTickGap=${8}/>
+                  <${YAxis} tick=${{fontSize:10,fill:C.muted}} tickLine=${false} axisLine=${false} width=${28}/>
+                  <${Tooltip} ...${tip}/>
+                  <${Legend} wrapperStyle=${{fontSize:11,paddingTop:4}}/>
+                  <${Bar} name="In" dataKey="in" fill=${C.credit} radius=${[4,4,0,0]} maxBarSize=${18}/>
+                  <${Bar} name="Out" dataKey="out" fill=${C.debit} radius=${[4,4,0,0]} maxBarSize=${18}/>
+                </${BarChart}>
+              </${ResponsiveContainer}>
+            </div>`}
+      </div>
+    </div>`;
+  }
 
   // Bill total — EXACT copy of the billing app's finalTotal():
   //   finalTotal = sum(price*qty) - discountAmt + adjustAmt
@@ -507,6 +702,8 @@
       setLoading(false);
     },[]);
     useEffect(()=>{ load(); },[load]);
+    // Live updates: ledger entries + bills (settling a bill changes "sales from bills").
+    const live=useRealtime(["mh_ledger","mh_customers"], load);
 
     const userMap=useMemo(()=>{ const m={}; users.forEach(u=>{ if(u.email) m[u.email]=initCap(u.display_name||u.email.split("@")[0]); }); return m; },[users]);
     const kindOf=(e)=> e.entry_type==="expense"?"expense":"income";
@@ -544,6 +741,11 @@
     const expense= useMemo(()=> periodEntries.filter(e=>kindOf(e)==="expense").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
     const net = income-expense;
     const shown=useMemo(()=> periodEntries.filter(e=> kind==="all"||kindOf(e)===kind),[periodEntries,kind]);
+
+    // Chart base: entries respecting the staff / category / search filters. The
+    // dashboard applies its own date period (week / 15d / month / 6m / year),
+    // independent of the page's date mode.
+    const chartBase=useMemo(()=> entries.filter(e=> matchStaff(e)&&matchCat(e)&&matchText(e)),[entries,staff,catF,q]);
 
     // ----- pagination (10 / page, same pattern as billing history) -----
     const totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
@@ -619,6 +821,7 @@
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
 
     return html`<div class="wrap">
+      <${LedgerDash} entries=${chartBase} live=${live}/>
       <div class="card" style=${{marginTop:12}}><div class="pad">
         <div class="seg" style=${{marginBottom:10}}>
           ${[["all","All"],["month","Month"],["year","Year"],["dates","Dates"]].map(o=>
@@ -1019,10 +1222,17 @@
       setLoading(false);
     },[]);
     useEffect(()=>{ load(); },[load]);
+    // Live updates: stock items + stock moves pushed from the server refresh instantly.
+    const live=useRealtime(["mh_inventory_items","mh_stock_moves"], load);
 
     const isLow=(it)=> num(it.reorder_level)>0 && num(it.qty)<=num(it.reorder_level);
     const totalValue=useMemo(()=> items.reduce((s,it)=> s+num(it.qty)*num(it.cost_price),0),[items]);
     const lowCount=useMemo(()=> items.filter(isLow).length,[items]);
+
+    // Dashboard datasets — recomputed whenever live data arrives.
+    const levels=useMemo(()=> items
+      .map(it=>({ name:it.name||"(item)", qty:num(it.qty), low:isLow(it) }))
+      .sort((a,b)=> b.qty-a.qty).slice(0,8),[items]);
 
     const list=useMemo(()=>{
       const s=q.trim().toLowerCase();
@@ -1035,6 +1245,7 @@
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading stock…</div></div></div>`;
 
     return html`<div class="wrap">
+      <${InventoryDash} levels=${levels} moves=${moves} live=${live}/>
       <div class="stats">
         <div class="stat"><div class="k">Stock value</div><div class="v">${money(totalValue)}</div></div>
         <div class=${"stat"+(lowCount?" warn":"")}><div class="k">Low / out</div><div class="v">${lowCount}</div></div>
