@@ -791,7 +791,7 @@
     // ----- sales reconciliation -----
     const importedRefs=useMemo(()=>{ const s=new Set(); entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null) s.add(String(e.ref)); }); return s; },[entries]);
     const billRows=useMemo(()=> bills.map(c=>({ id:c.id, bill_no:c.bill_no, name:c.name, added_by:c.added_by,
-      date:String(c.date||c.bill_time||c.settled_at||c.created_at||"").slice(0,10), amount:billTotal(c) })),[bills]);
+      date:String(c.settled_at||c.date||c.bill_time||c.created_at||"").slice(0,10), amount:billTotal(c) })),[bills]);
     const liveSales=useMemo(()=> billRows.reduce((s,b)=>s+b.amount,0),[billRows]);
     const importedSales=useMemo(()=> entries.filter(e=>e.source==="bill").reduce((s,e)=>s+num(e.amount),0),[entries]);
     const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
