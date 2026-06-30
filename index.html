@@ -125,10 +125,12 @@
     max-width:520px;margin:0 auto;min-height:100vh;min-height:100dvh;
     background:var(--surface);
     box-shadow:var(--shadow-lg),0 0 0 1px var(--line);
-    transform-style:preserve-3d;
+    /* NOTE: do NOT set transform/filter/transform-style here — that would turn
+       #root into the containing block for position:fixed/sticky descendants
+       (FAB & sheet overlays), anchoring them to #root instead of the viewport. */
   }
   h1,h2,h3{font-family:inherit;font-weight:800;letter-spacing:-.022em;margin:0}
-  .wrap{padding:0 14px 96px}
+  .wrap{padding:0 14px 18px}
   .muted{color:var(--muted)}
   .tiny{font-size:12px}
   .nowrap{white-space:nowrap}
@@ -390,10 +392,14 @@
   .search input{padding-left:38px}
   .search .ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.45}
 
-  /* ── FAB — highest elevation ── */
+  /* ── FAB — sticky: floats at the bottom of the viewport while scrolling,
+     then settles below the pagination when you reach the end of the page. ── */
   .fab{
-    position:fixed;left:50%;transform:translateX(-50%);
-    bottom:20px;z-index:40;width:min(488px,calc(100% - 28px));
+    position:sticky;
+    bottom:max(20px,env(safe-area-inset-bottom));
+    z-index:40;
+    width:min(488px,calc(100% - 28px));
+    margin:0 auto 20px;
   }
   .fab .btn{
     box-shadow:
@@ -447,6 +453,17 @@
     margin:10px auto 6px;
   }
   .sheet h2{font-size:21px;font-weight:800;margin:6px 2px 2px;letter-spacing:-.025em}
+
+  /* Sticky action footer inside a sheet — the primary button floats at the
+     bottom of the popup while its content scrolls, and settles at the end. */
+  .sheet-foot{
+    position:sticky;
+    bottom:-1px;
+    margin:16px -18px -28px;
+    padding:14px 18px max(18px,env(safe-area-inset-bottom));
+    background:linear-gradient(180deg, transparent 0%, var(--surface) 30%);
+    z-index:3;
+  }
 
   /* ── Ledger entry line ── */
   .entry{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px dashed var(--line)}
@@ -1362,8 +1379,9 @@
             <p class="tiny muted" style=${{marginTop:6}}>As admin you can log this entry on behalf of another staff member.</p></div>`
         : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--muted)',borderColor:'var(--line-strong)',fontWeight:500}}>
             Recorded by <b style=${{color:'var(--ink)'}}>${dispName(meEmail,userMap)}</b></div>`}
-      <div style=${{height:14}}></div>
-      <button class="btn" disabled=${busy||num(amt)<=0} onClick=${save}>${busy?"Saving…":"Save "+kind}</button>
+      <div class="sheet-foot">
+        <button class="btn" disabled=${busy||num(amt)<=0} onClick=${save}>${busy?"Saving…":"Save "+kind}</button>
+      </div>
     </${Sheet}>`;
   }
 
@@ -1409,8 +1427,9 @@
           </div>`
         : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--muted)',borderColor:'var(--line-strong)',fontWeight:500}}>
             Credited to each bill's original staff. ${'\u00A0'}<span class="tiny">(Reassigning requires an admin.)</span></div>`}
-      <div style=${{height:14}}></div>
-      <button class="btn" disabled=${busy||count===0} onClick=${go}>${busy?html`<span class="spin"></span> Importing…`:("Import "+count+" sale"+(count===1?"":"s"))}</button>
+      <div class="sheet-foot">
+        <button class="btn" disabled=${busy||count===0} onClick=${go}>${busy?html`<span class="spin"></span> Importing…`:("Import "+count+" sale"+(count===1?"":"s"))}</button>
+      </div>
           </div>`
         : html`<div>
             <p class="tiny muted" style=${{margin:"10px 2px"}}>Import each bill on its own${isAdmin?", choosing who it's credited to":""}. ${count} pending.</p>
@@ -1578,8 +1597,9 @@
           </div>
         </div>`)}
         <div class="banner net" style=${{marginTop:12}}>Re-running an import adds new rows. To redo, an admin can clear prior Excel imports in Supabase: <code>delete from mh_ledger where source='excel';</code></div>
-        <div style=${{height:12}}></div>
-        <button class="btn" disabled=${busy} onClick=${confirm}>${busy?"Importing…":"Import "+buildEntries().length+" entries"}</button>
+        <div class="sheet-foot">
+          <button class="btn" disabled=${busy} onClick=${confirm}>${busy?"Importing…":"Import "+buildEntries().length+" entries"}</button>
+        </div>
       </div>`}
     </${Sheet}>`;
   }
