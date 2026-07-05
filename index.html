@@ -714,7 +714,10 @@
   const numFmt = (n)=> (Math.round((Number(n)||0)*100)/100).toLocaleString("en-IN"); // table cells: no currency symbol
   const abs = (n)=> money(Math.abs(Number(n)||0));
   const initials = (s)=> (String(s||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("")||"?").toUpperCase();
-  const todayISO = ()=> new Date().toISOString().slice(0,10);
+  // Local calendar date as YYYY-MM-DD. NOT toISOString() — that is UTC and
+  // files late-night IST entries (00:00–05:30) onto the previous day/month.
+  const localISO = (d)=>{ const p=(n)=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate()); };
+  const todayISO = ()=> localISO(new Date());
   const fmtDate = (d)=>{ if(!d) return ""; const x=new Date(d); return isNaN(x)?String(d):x.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}); };
   const fmtDT = (d)=>{ if(!d) return ""; const x=new Date(d); return isNaN(x)?String(d):x.toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); };
   const num = (v)=>{ const n=Number(v); return isNaN(n)?0:n; };
@@ -784,12 +787,12 @@
     const today=new Date(), buckets=[], map={};
     if(def.unit==="day"){
       for(let i=def.days-1;i>=0;i--){ const d=new Date(today); d.setDate(d.getDate()-i);
-        const key=d.toISOString().slice(0,10);
+        const key=localISO(d);
         const b={ key, label:d.toLocaleDateString("en-IN",{day:"2-digit",month:"short"}) };
         buckets.push(b); map[key]=b; }
     } else {
       for(let i=def.months-1;i>=0;i--){ const d=new Date(today.getFullYear(),today.getMonth()-i,1);
-        const key=d.toISOString().slice(0,7);
+        const key=localISO(d).slice(0,7);
         const b={ key, label:d.toLocaleDateString("en-IN",{month:"short",year:"2-digit"}) };
         buckets.push(b); map[key]=b; }
     }
@@ -1061,10 +1064,11 @@
     const [bills,setBills]=useState([]);
     const [users,setUsers]=useState([]);
     const [loading,setLoading]=useState(true);
+    const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
 
     // ----- advanced search state -----
     const [mode,setMode]=useState("month");                 // all | month | year | dates
-    const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
+    const [month,setMonth]=useState(localISO(new Date()).slice(0,7));
     const [year,setYear]=useState(String(new Date().getFullYear()));
     const [dFrom,setDFrom]=useState(""); const [dTo,setDTo]=useState("");
     const [staff,setStaff]=useState("all");
@@ -1083,7 +1087,10 @@
     const [xls,setXls]=useState(false);
 
     const load=useCallback(async()=>{
-      setLoading(true);
+      // Only show the blocking spinner on first load. Realtime refreshes must NOT
+      // flip `loading`, or the early-return below unmounts any open sheet and wipes
+      // whatever the user is typing.
+      if(!loadedOnce.current) setLoading(true);
       try{
         const [e,c,u]=await Promise.all([
           sb.from("mh_ledger").select("*").order("entry_date",{ascending:false}).order("created_at",{ascending:false}),
@@ -1094,6 +1101,7 @@
         setEntries(e.data||[]);
         setBills((c.data||[]).filter(isSettled));
         setUsers((u.data||[]).filter(x=>x.active!==false));
+        loadedOnce.current=true;
       }catch(err){ toastErr(err.message||"Load failed"); }
       setLoading(false);
     },[]);
@@ -1105,7 +1113,7 @@
     const kindOf=(e)=> e.entry_type==="expense"?"expense":"income";
     const dateOf=(e)=> String(e.entry_date||e.created_at||"").slice(0,10);
 
-    const months=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,7)).filter(Boolean)); s.add(new Date().toISOString().slice(0,7)); return Array.from(s).sort().reverse(); },[entries]);
+    const months=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,7)).filter(Boolean)); s.add(localISO(new Date()).slice(0,7)); return Array.from(s).sort().reverse(); },[entries]);
     const years=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,4)).filter(Boolean)); s.add(String(new Date().getFullYear())); return Array.from(s).sort().reverse(); },[entries]);
     // staff dropdown = active users + any creator key present in entries not already listed
     const staffOpts=useMemo(()=>{
@@ -1614,9 +1622,12 @@
     const [edit,setEdit]=useState(null);   // item or {} for new
     const [moveFor,setMoveFor]=useState(null);
     const [history,setHistory]=useState(null);
+    const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
 
     const load=useCallback(async()=>{
-      setLoading(true);
+      // First load shows the spinner; realtime refreshes must not, or an open
+      // ItemSheet/MoveSheet unmounts and the user loses what they were typing.
+      if(!loadedOnce.current) setLoading(true);
       try{
         const [i,m,s]=await Promise.all([
           sb.from("mh_inventory_items").select("*").order("name"),
@@ -1627,6 +1638,7 @@
         setItems((i.data||[]).filter(x=>x.active!==false));
         setMoves(m.data||[]);
         setSuppliers(s.data||[]);
+        loadedOnce.current=true;
       }catch(err){ toastErr(err.message||"Load failed"); }
       setLoading(false);
     },[]);
@@ -1802,8 +1814,11 @@
         // optional: also post to supplier ledger as a purchase (credit = you owe them)
         if(type==="in" && supplierLedger && item.supplier_id && num(cost)>0){
           const amount=q*num(cost);
+          // Cashbook classifies anything !== "expense" as income, so this MUST be
+          // "expense" — a purchase is money out, not income. (Was "credit" → the
+          // cashbook silently booked every supplier purchase as income.)
           const { error:e3 } = await sb.from("mh_ledger").insert({
-            party_id:item.supplier_id, entry_type:"credit", amount, mode:"credit",
+            party_id:item.supplier_id, entry_type:"expense", amount, category:"Supplies / Purchase", mode:"credit",
             note:"Purchase: "+item.name+" ×"+q, entry_date:date, source:"manual", created_by:me&&me.email });
           if(e3) throw e3;
         }
