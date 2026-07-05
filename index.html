@@ -602,6 +602,31 @@
     window.__gtLoaded = true;
     if(window.__mountGT) window.__mountGT();
   };
+
+  // Google Translate wraps React's text nodes in <font> tags. On the next
+  // re-render React calls removeChild/insertBefore on nodes that are no longer
+  // where it left them, the DOM throws, and React 18 unmounts the whole app
+  // (blank page until refresh). Make both calls tolerant so a translated
+  // re-render degrades to a console warning instead of a crash.
+  // (Standard workaround from facebook/react#11538.)
+  if(typeof Node==="function" && Node.prototype){
+    var _removeChild=Node.prototype.removeChild;
+    Node.prototype.removeChild=function(child){
+      if(child && child.parentNode!==this){
+        if(window.console) console.warn("GT-safe removeChild: node moved by translator, skipping");
+        return child;
+      }
+      return _removeChild.apply(this,arguments);
+    };
+    var _insertBefore=Node.prototype.insertBefore;
+    Node.prototype.insertBefore=function(newNode,referenceNode){
+      if(referenceNode && referenceNode.parentNode!==this){
+        if(window.console) console.warn("GT-safe insertBefore: reference moved by translator, appending instead");
+        return _insertBefore.call(this,newNode,null);
+      }
+      return _insertBefore.apply(this,arguments);
+    };
+  }
 </script>
 <script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" defer onerror="window.__gtFailed=true"></script>
 
