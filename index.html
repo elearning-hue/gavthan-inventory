@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Gavthan Manager — Ledger &amp; Inventory</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg"/>
 <link rel="icon" type="image/png" sizes="any" href="favicon.png"/>
 <link rel="apple-touch-icon" href="favicon.png"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -135,11 +136,10 @@
   .brand b{font-size:16.5px;font-weight:650;letter-spacing:-.015em}
   .brand span{font-size:11px;color:var(--muted);letter-spacing:.02em;font-weight:500}
 
-  /* ── Crest: flat brand mark ── */
+  /* ── Crest: brand mark = favicon artwork ── */
   .crest{
-    width:38px;height:38px;border-radius:10px;
-    background:var(--accent);
-    color:var(--accent-fg);display:grid;place-items:center;font-weight:700;font-size:16px;flex:0 0 auto;
+    width:38px;height:38px;border-radius:10px;flex:0 0 auto;
+    display:block;object-fit:contain;background:transparent;
   }
 
   /* ── Icon buttons — quiet until hovered ── */
@@ -360,7 +360,8 @@
   .empty .e{font-size:36px;display:block;margin-bottom:8px;opacity:.65}
 
   /* ── Ledger table ── */
-  .lthead,.ltrow{display:grid;grid-template-columns:66px 1fr 56px 56px 50px;gap:0;align-items:stretch;border-bottom:1px solid var(--line)}
+  /* Dr/Cr sized for 6-digit figures with Indian grouping (e.g. 9,99,999) */
+  .lthead,.ltrow{display:grid;grid-template-columns:58px 1fr 76px 76px 46px;gap:0;align-items:stretch;border-bottom:1px solid var(--line)}
   .lthead>*,.ltrow>*{display:flex;align-items:center;min-width:0;padding:10px 8px;border-right:1px solid var(--line)}
   .lthead>*:last-child,.ltrow>*:last-child{border-right:0}
   .lthead>*{justify-content:center;text-align:center}
@@ -378,7 +379,7 @@
   .lt-desc>*{max-width:100%}
   .lt-desc b{font-size:13px}
   .lt-desc .sub{font-size:10px;color:var(--muted)}
-  .lt-amt{justify-content:flex-end;font-weight:800;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lt-amt{justify-content:flex-end;font-weight:650;font-size:12.5px;padding-left:5px;padding-right:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .lt-dr{color:var(--credit)} .lt-cr{color:var(--debit)}
   .lt-setcell{justify-content:center}
   .setbtn{
@@ -433,7 +434,7 @@
   /* ── Login — quiet, centered, content-first ── */
   .login{max-width:360px;margin:0 auto;padding:min(18vh,140px) 24px 48px}
   .login .crest{
-    width:48px;height:48px;font-size:22px;border-radius:12px;margin:0 auto 20px;
+    width:56px;height:56px;border-radius:14px;margin:0 auto 20px;
   }
   .login h1{text-align:center;font-size:22px;font-weight:700;letter-spacing:-.02em;margin-bottom:28px}
   .login p.sub{text-align:center;color:var(--muted);margin:5px 0 24px;font-size:14px}
@@ -527,6 +528,28 @@
   /* Settle-status filter (ledger header): tinted when active */
   .settlebtn.un{color:var(--debit);border-color:var(--red-border);background:var(--red-bg)}
   .settlebtn.yes{color:var(--accent-ink);border-color:var(--accent-tint-2);background:var(--accent-tint)}
+
+  /* ── Google Translate widget: compact chip in the topbar; suppress the
+     injected top banner so the layout never jumps. ── */
+  body{top:0!important}
+  iframe.goog-te-banner-frame,.goog-te-banner-frame.skiptranslate{display:none!important}
+  #gt_widget{display:flex;align-items:center;max-width:150px;overflow:hidden}
+  #gt_widget .goog-te-gadget-simple{
+    border:1px solid var(--line)!important;background:var(--surface)!important;
+    border-radius:10px!important;padding:6px 8px!important;
+    font-size:12px!important;line-height:1.2!important;cursor:pointer;
+    display:inline-flex!important;align-items:center;white-space:nowrap;
+  }
+  #gt_widget .goog-te-gadget-simple img{display:none!important}
+  #gt_widget .goog-te-gadget-simple [aria-hidden="true"]{color:var(--muted)!important}
+  #gt_widget .goog-te-gadget-simple a,
+  #gt_widget .goog-te-gadget-simple .goog-te-menu-value,
+  #gt_widget .goog-te-gadget-simple .goog-te-menu-value span{
+    color:var(--muted)!important;text-decoration:none!important;border:none!important;
+    font-family:inherit!important;
+  }
+  .goog-tooltip,.goog-tooltip:hover{display:none!important}
+  .goog-text-highlight{background:transparent!important;box-shadow:none!important}
 </style>
 </head>
 <body>
@@ -570,6 +593,17 @@
      block app start; the dashboards detect a missing Recharts and degrade gracefully. -->
 <script src="https://cdn.jsdelivr.net/npm/prop-types@15/prop-types.min.js" onerror="window.__chartsFailed=true"></script>
 <script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js" onerror="window.__chartsFailed=true"></script>
+
+<!-- Google Translate (English -> Marathi). OPTIONAL: mounts into #gt_widget
+     in the header once both the script and the header exist; never blocks
+     app start if the network filters translate.google.com. -->
+<script>
+  window.googleTranslateElementInit = function(){
+    window.__gtLoaded = true;
+    if(window.__mountGT) window.__mountGT();
+  };
+</script>
+<script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" defer onerror="window.__gtFailed=true"></script>
 
 <script>
 "use strict";
@@ -638,8 +672,21 @@
   const clickable = (fn)=>({ role:"button", tabIndex:0, onClick:fn,
     onKeyDown:(e)=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fn(e); } } });
 
+  // Mounts the Google Translate dropdown into #gt_widget (header). Safe to call
+  // repeatedly: no-ops until the script has loaded and the div is empty.
+  function mountGT(){
+    var el=document.getElementById("gt_widget");
+    if(!el || el.childElementCount>0) return;
+    if(!(window.google && google.translate && google.translate.TranslateElement)) return;
+    var opts={ pageLanguage:"en", includedLanguages:"mr,hi", autoDisplay:false };
+    try{ opts.layout=google.translate.TranslateElement.InlineLayout.SIMPLE; }catch(e){}
+    new google.translate.TranslateElement(opts,"gt_widget");
+  }
+  window.__mountGT=mountGT;
+
   /* ---------- helpers ---------- */
   const money = (n)=> CUR + (Math.round((Number(n)||0)*100)/100).toLocaleString("en-IN");
+  const numFmt = (n)=> (Math.round((Number(n)||0)*100)/100).toLocaleString("en-IN"); // table cells: no currency symbol
   const abs = (n)=> money(Math.abs(Number(n)||0));
   const initials = (s)=> (String(s||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("")||"?").toUpperCase();
   const todayISO = ()=> new Date().toISOString().slice(0,10);
@@ -894,7 +941,7 @@
       })();
     },[session]);
 
-    if(boot) return html`<div class="login"><div class="crest">${(CFG.hotelName||"G")[0]}</div><p class="sub">Loading…</p></div>`;
+    if(boot) return html`<div class="login"><img class="crest" src="favicon.svg" alt="" style=${{margin:"0 auto 20px"}}/><p class="sub">Loading…</p></div>`;
     if(!session) return html`<${Login} />${toastEl}`;
     if(me && me.active===false)
       return html`<div class="login"><h1>Account disabled</h1><p class="sub">Ask an admin to re-enable your login.</p><button class="btn sec" onClick=${()=>sb.auth.signOut()}>Sign out</button></div>`;
@@ -916,11 +963,13 @@
   function Header({me,module}){
     const [theme,setTheme]=useState(getTheme());
     function toggle(){ const n=theme==="dark"?"light":"dark"; setTheme(n); applyTheme(n); }
+    useEffect(()=>{ mountGT(); },[]);
     return html`<div class="topbar">
-      <div class="crest">${(CFG.hotelName||"G")[0]}</div>
-      <div class="brand"><b>${CFG.hotelName||"Gavthan"} Manager</b>
+      <img class="crest" src="favicon.svg" alt=""/>
+      <div class="brand"><b class="notranslate">${CFG.hotelName||"Gavthan"} Manager</b>
         <span>${module==="ledger"?"Receivables & Payables":"Inventory control"}</span></div>
       <div class="row" style=${{marginLeft:"auto",gap:8}}>
+        <div id="gt_widget" title="Translate / भाषांतर करा" aria-label="Translate to Marathi"></div>
         <button class="theme-toggle" aria-label=${"Switch to "+(theme==="dark"?"light":"dark")+" mode"} title=${"Switch to "+(theme==="dark"?"light":"dark")+" mode"} onClick=${toggle}><${Icon} name=${theme==="dark"?"sun":"moon"}/></button>
         <button class="iconbtn" aria-label="Sign out" title=${"Sign out ("+(me?me.email:"")+")"} onClick=${()=>{ if(confirm("Sign out?")) sb.auth.signOut(); }}><${Icon} name="logout"/></button>
       </div>
@@ -940,7 +989,7 @@
       if(error) setErr(error.message||"Login failed");
     }
     return html`<form class="login" onSubmit=${submit}>
-      <div class="crest">${(CFG.hotelName||"G")[0]}</div>
+      <img class="crest" src="favicon.svg" alt=""/>
       <h1>${CFG.hotelName||"Gavthan"} Manager</h1>
       ${err && html`<div class="banner" role="alert" style=${{marginBottom:14}}>${err}</div>`}
       <label>Email</label>
@@ -1229,8 +1278,8 @@
                   <b class="ell">${e.note|| (isInc?"Income":"Expense")}</b>
                   <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}</div>
                 </span>
-                <span class="lt-amt lt-dr">${isInc?money(e.amount):""}</span>
-                <span class="lt-amt lt-cr">${isInc?"":money(e.amount)}</span>
+                <span class="lt-amt lt-dr">${isInc?numFmt(e.amount):""}</span>
+                <span class="lt-amt lt-cr">${isInc?"":numFmt(e.amount)}</span>
                 <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} onClick=${()=>setSettle(e.id, e.settled===false)}>${e.settled===false?"No":"Yes"}</button></span>
               </div>`; })}
           </div>`}

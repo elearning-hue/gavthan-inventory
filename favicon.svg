@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#43464c"/>
+      <stop offset="1" stop-color="#1b1d20"/>
+    </linearGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#faf4e4"/>
+      <stop offset="1" stop-color="#eadfc4"/>
+    </linearGradient>
+    <linearGradient id="coin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd75e"/>
+      <stop offset="1" stop-color="#dfa60e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- dark rounded tile -->
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="url(#tile)"/>
+  <rect x="1.75" y="1.75" width="60.5" height="60.5" rx="14.4" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="1.5"/>
+
+  <!-- ledger page -->
+  <rect x="17" y="11" width="30" height="40" rx="4" fill="url(#page)"/>
+  <!-- ruled lines -->
+  <path d="M22 19h20M22 25h20M22 31h20M22 37h14M22 43h11" stroke="#93805c" stroke-width="2.2" stroke-linecap="round" opacity=".8"/>
+  <!-- red ribbon -->
+  <path d="M39 11h6.5v16l-3.25-3.4L39 27z" fill="#d63a2e"/>
+
+  <!-- gold coin -->
+  <circle cx="21.5" cy="46.5" r="11" fill="url(#coin)"/>
+  <circle cx="21.5" cy="46.5" r="11" fill="none" stroke="#a87b06" stroke-width="1.6"/>
+  <circle cx="21.5" cy="46.5" r="7.2" fill="none" stroke="#a87b06" stroke-opacity=".55" stroke-width="1.2"/>
+  <!-- rupee mark -->
+  <path d="M18.4 42.6h6.2M18.4 45.4h6.2M18.4 42.6c3.4 0 4.6 1.3 4.6 2.8 0 1.7-1.4 2.9-3.4 2.9l4.4 4.3" fill="none" stroke="#7c5a04" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
