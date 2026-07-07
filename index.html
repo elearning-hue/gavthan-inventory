@@ -529,29 +529,17 @@
   .settlebtn.un{color:var(--debit);border-color:var(--red-border);background:var(--red-bg)}
   .settlebtn.yes{color:var(--accent-ink);border-color:var(--accent-tint-2);background:var(--accent-tint)}
 
-  /* ── Google Translate widget: compact chip in the topbar; suppress the
-     injected top banner so the layout never jumps. ── */
-  body{top:0!important}
-  iframe.goog-te-banner-frame,.goog-te-banner-frame.skiptranslate{display:none!important}
+  /* ── Google Translate: no visible UI. Header toggle drives it via cookie.
+     Kill the injected top banner/tooltips; never let it shift the layout. ── */
+  body{top:0!important;position:static!important}
+  .goog-te-banner-frame,.goog-te-banner-frame.skiptranslate,
+  iframe.goog-te-banner-frame,.goog-te-menu-frame,
+  #goog-gt-tt,.goog-te-balloon-frame,
+  .goog-tooltip,.goog-tooltip:hover{display:none!important}
   /* engine element must stay renderable (display:none stops Google initialising),
-     so clip it out of sight; the header toggle drives it via the googtrans cookie */
+     so clip it out of sight instead */
   #gt_widget{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);opacity:0;pointer-events:none}
   .theme-toggle.on{color:var(--accent);background:var(--accent-tint);border-color:var(--accent-tint-2)}
-  #gt_widget .goog-te-gadget-simple{
-    border:1px solid var(--line)!important;background:var(--surface)!important;
-    border-radius:10px!important;padding:6px 8px!important;
-    font-size:12px!important;line-height:1.2!important;cursor:pointer;
-    display:inline-flex!important;align-items:center;white-space:nowrap;
-  }
-  #gt_widget .goog-te-gadget-simple img{display:none!important}
-  #gt_widget .goog-te-gadget-simple [aria-hidden="true"]{color:var(--muted)!important}
-  #gt_widget .goog-te-gadget-simple a,
-  #gt_widget .goog-te-gadget-simple .goog-te-menu-value,
-  #gt_widget .goog-te-gadget-simple .goog-te-menu-value span{
-    color:var(--muted)!important;text-decoration:none!important;border:none!important;
-    font-family:inherit!important;
-  }
-  .goog-tooltip,.goog-tooltip:hover{display:none!important}
   .goog-text-highlight{background:transparent!important;box-shadow:none!important}
 </style>
 </head>
