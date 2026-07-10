@@ -370,10 +370,12 @@
     background:var(--surface-2);
     border-bottom:1px solid var(--line-strong);
   }
-  .ltrow{transition:background .1s}
+  .ltrow{transition:background .1s;cursor:pointer}
   .ltrow:last-child{border-bottom:0}
   .ltrow:hover{background:var(--surface-2)}
   .ltrow:active{background:var(--surface-3)}
+  .ltrow:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--accent)}
+  .ltrow-void{opacity:.55}
   .lt-date{font-size:10.5px;color:var(--muted);line-height:1.2;white-space:nowrap;overflow:hidden}
   .lt-desc{flex-direction:column;align-items:flex-start;justify-content:center;gap:1px}
   .lt-desc>*{max-width:100%}
@@ -1244,6 +1246,27 @@
       if(error){ toastErr(error.message||"Couldn't update"); setEntries(prev=> prev.map(x=> x.id===id?{...x,settled:!val}:x)); }
     }
 
+    const [detail,setDetail]=useState(null);   // ledger row tapped -> view/reverse sheet
+    const [reversing,setReversing]=useState(false);
+    // No delete on ledger rows (audit trail). Void an entry by posting an
+    // identical opposing entry instead, and flag the original so it can't be
+    // reversed twice. The reversal itself is not reversible.
+    async function reverseEntry(e){
+      setReversing(true);
+      try{
+        const oppKind = kindOf(e)==="income" ? "expense" : "income";
+        const { error:e1 } = await sb.from("mh_ledger").insert({
+          entry_type:oppKind, amount:num(e.amount), category:e.category||"Reversal",
+          note:"Reversal of: "+(e.note||e.category||"entry"), entry_date:todayISO(),
+          mode:e.mode||null, source:"reversal", ref:String(e.id), created_by:meEmail });
+        if(e1) throw e1;
+        const { error:e2 } = await sb.from("mh_ledger").update({ reversed:true }).eq("id",e.id);
+        if(e2) throw e2;
+        toast("Entry reversed"); setDetail(null); await load();
+      }catch(err){ toastErr(err.message||"Reversal failed"); }
+      setReversing(false);
+    }
+
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
 
     return html`<div class="wrap">
@@ -1325,15 +1348,15 @@
             </div>
             ${pageItems.map(e=>{ const isInc=kindOf(e)==="income"; const p=dateOf(e).split("-");
               const dmy=p.length===3?(p[2]+"/"+p[1]+"/"+p[0].slice(2)):dateOf(e);
-              return html`<div class="ltrow" key=${e.id}>
+              return html`<div class=${"ltrow"+(e.reversed||e.source==="reversal"?" ltrow-void":"")} key=${e.id} aria-label=${"View entry: "+(e.note||e.category||"entry")} ...${clickable(()=>setDetail(e))}>
                 <span class="lt-date">${dmy}</span>
                 <span class="lt-desc">
                   <b class="ell">${e.note|| (isInc?"Income":"Expense")}</b>
-                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}</div>
+                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}${e.reversed?" · reversed":""}${e.source==="reversal"?" · reversal":""}</div>
                 </span>
                 <span class="lt-amt lt-dr">${isInc?numFmt(e.amount):""}</span>
                 <span class="lt-amt lt-cr">${isInc?"":numFmt(e.amount)}</span>
-                <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} onClick=${()=>setSettle(e.id, e.settled===false)}>${e.settled===false?"No":"Yes"}</button></span>
+                <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} onClick=${(ev)=>{ev.stopPropagation();setSettle(e.id, e.settled===false);}}>${e.settled===false?"No":"Yes"}</button></span>
               </div>`; })}
           </div>`}
         ${shown.length>PAGE_SIZE && html`<div class="pager">
@@ -1350,6 +1373,26 @@
 
     ${sheet && html`<${EntrySheet} kind0=${sheet.kind} meEmail=${meEmail} isAdmin=${isAdmin}
         users=${users} userMap=${userMap} onClose=${()=>setSheet(null)} onSaved=${()=>{setSheet(null);load();}}/>`}
+    ${detail && html`<${Sheet} onClose=${()=>setDetail(null)} title="Entry detail">
+        <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
+          <b>${detail.note||detail.category||"Entry"}</b><br/>
+          <span class="tiny muted">${(CAT_EMOJI[detail.category]||"")+" "+(detail.category||"—")} · ${dispName(detail.created_by,userMap)||"—"} · ${dateOf(detail)}</span>
+        </div>
+        <div class="stats" style=${{marginTop:12}}>
+          <div class=${"stat "+(kindOf(detail)==="income"?"green":"red")}>
+            <div class="k">${kindOf(detail)==="income"?"Income":"Expense"}</div>
+            <div class="v">${money(detail.amount)}</div>
+          </div>
+        </div>
+        ${detail.reversed
+          ? html`<div class="banner net" style=${{marginTop:12}}>This entry has already been reversed. No further action needed.</div>`
+          : detail.source==="reversal"
+          ? html`<div class="banner net" style=${{marginTop:12}}>This is itself a reversal entry (of #${detail.ref}) — it can't be reversed again.</div>`
+          : html`<div>
+              <p class="tiny muted" style=${{margin:"12px 2px"}}>No delete — voiding this entry posts an equal, opposite ${kindOf(detail)==="income"?"expense":"income"} entry dated today, and marks the original as reversed. Both stay in the ledger for audit.</p>
+              <button class="btn danger" disabled=${reversing} onClick=${()=>{ if(confirm("Reverse this entry? This posts an opposing "+money(detail.amount)+" entry and cannot be undone.")) reverseEntry(detail); }}>${reversing?"Reversing…":"Reversal entry"}</button>
+            </div>`}
+    </${Sheet}>`}
     ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} live=${liveSales} imported=${importedSales} onClose=${()=>setRecon(false)}/>`}
     ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}
