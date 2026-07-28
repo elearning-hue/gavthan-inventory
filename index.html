@@ -196,6 +196,7 @@
   }
   .stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
   .stat .v{font-size:21px;font-weight:700;letter-spacing:-.02em;margin-top:4px}
+  .stat .pend{font-size:10.5px;font-weight:600;color:var(--muted-2);margin-top:3px;line-height:1.3}
   .stat.green .v{color:var(--credit)} .stat.red .v{color:var(--debit)} .stat.warn .v{color:var(--warn)}
 
   /* ── List rows ── */
@@ -1163,17 +1164,27 @@
     },[entries]);
 
     const periodEntries=useMemo(()=> entries.filter(e=> inPeriod(dateOf(e)) && matchStaff(e) && matchCat(e) && matchText(e)),[entries,mode,month,year,dFrom,dTo,staff,catF,q]);
-    const income = useMemo(()=> periodEntries.filter(e=>kindOf(e)==="income").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
-    const expense= useMemo(()=> periodEntries.filter(e=>kindOf(e)==="expense").reduce((s,e)=>s+num(e.amount),0),[periodEntries]);
+    // Settle = money actually received / paid. Entries flagged "No" are pending
+    // and must NOT count toward Income / Expense / Net until flipped to "Yes";
+    // they are surfaced separately as "pending" so nothing goes invisible.
+    const isSettledEntry=(e)=> e.settled!==false;
+    const sumOf=(list,k)=> list.filter(e=>kindOf(e)===k).reduce((s,e)=>s+num(e.amount),0);
+    const settledEntries=useMemo(()=> periodEntries.filter(isSettledEntry),[periodEntries]);
+    const unsettledEntries=useMemo(()=> periodEntries.filter(e=>!isSettledEntry(e)),[periodEntries]);
+    const income = useMemo(()=> sumOf(settledEntries,"income"),[settledEntries]);
+    const expense= useMemo(()=> sumOf(settledEntries,"expense"),[settledEntries]);
     const net = income-expense;
+    const pendingIncome = useMemo(()=> sumOf(unsettledEntries,"income"),[unsettledEntries]);
+    const pendingExpense= useMemo(()=> sumOf(unsettledEntries,"expense"),[unsettledEntries]);
     const matchSettle=(e)=> settleF==="all" || (settleF==="un" ? e.settled===false : e.settled!==false);
     const shown=useMemo(()=> periodEntries.filter(e=> (kind==="all"||kindOf(e)===kind) && matchSettle(e)),[periodEntries,kind,settleF]);
-    const unsettledCount=useMemo(()=> periodEntries.filter(e=>e.settled===false).length,[periodEntries]);
+    const unsettledCount=unsettledEntries.length;
 
     // Chart base: entries respecting the staff / category / search filters. The
     // dashboard applies its own date period (week / 15d / month / 6m / year),
-    // independent of the page's date mode.
-    const chartBase=useMemo(()=> entries.filter(e=> matchStaff(e)&&matchCat(e)&&matchText(e)),[entries,staff,catF,q]);
+    // independent of the page's date mode. Unsettled entries are excluded so the
+    // chart agrees with the Income / Expense / Net tiles.
+    const chartBase=useMemo(()=> entries.filter(e=> isSettledEntry(e)&&matchStaff(e)&&matchCat(e)&&matchText(e)),[entries,staff,catF,q]);
 
     // ----- pagination (10 / page, same pattern as billing history) -----
     const totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
@@ -1299,12 +1310,15 @@
       </div></div>
 
       <div class="stats">
-        <div class="stat green"><div class="k">Income</div><div class="v">${money(income)}</div></div>
-        <div class="stat red"><div class="k">Expense</div><div class="v">${money(expense)}</div></div>
+        <div class="stat green"><div class="k">Income</div><div class="v">${money(income)}</div>
+          ${pendingIncome>0 && html`<div class="pend">+${money(pendingIncome)} pending</div>`}</div>
+        <div class="stat red"><div class="k">Expense</div><div class="v">${money(expense)}</div>
+          ${pendingExpense>0 && html`<div class="pend">+${money(pendingExpense)} pending</div>`}</div>
       </div>
       <div class="stat" style=${{marginTop:10}}>
         <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+dispName(staff,userMap)):""}${catF!=="all"?(" · "+catF):""}</div>
         <div class="v" style=${{color: net>=0?'var(--credit)':'var(--debit)'}}>${money(net)}</div>
+        ${unsettledCount>0 && html`<div class="pend">Settled only · ${unsettledCount} unsettled entr${unsettledCount===1?"y":"ies"} excluded</div>`}
       </div>
 
       ${(pending.length>0 || liveSales!==importedSales) && html`<div class="card"><div class="pad">
