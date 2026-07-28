@@ -83,17 +83,32 @@ client) deduct nothing. Add a reconcile view listing settled bills with no
 deduction record — reuse the existing "Reconcile bills" pattern already used
 for ledger sales import.
 
-**Decisions still needed (blockers):**
-1. Do bill line items carry a stable menu-item id, or only a name string?
-   If name-only, `category_item_mappings` must key on normalized name, not
-   `gavthan_item_id`. **Verify in billing app repo / DB before schema work.**
-2. Idempotency key confirmed as (bill_id, item_id) — but confirm bills cannot
-   legitimately contain the same item twice as separate lines; if they can,
-   key on (bill_id, line_index) instead.
-3. Does the billing app already deduct anything today? If yes, avoid double
-   deduction.
-4. Target-category names must match exactly between menu and mapping
-   ("Cold Drinks" vs "Cold Drink") — confirm the canonical strings.
+**Blockers RESOLVED 2026-07-08 (answers from user):**
+1. Bill lines carry **menu names only** — no stable menu item id. Mapping
+   keys on normalized name (`mh_norm`: lowercase, trim, collapse whitespace).
+2. A bill **never** holds the same menu item as two separate lines.
+3. Billing app **does not touch stock** today — no double-deduction risk.
+4. **Always read categories from `mh_categories`** — never hardcode names.
+   Implemented as a `deducts_stock boolean` flag on that table, so the
+   "Cold Drinks" vs "Cold Drink" string problem disappears permanently.
+
+**Design catch:** two different menu names can map to the SAME inventory item
+("Aquafina 1L" and "Bisleri 1L" -> "Water Bottle 1L"), so one bill can hit one
+inventory item twice. Idempotency key is therefore
+**(bill_id, menu_name_norm)**, NOT (bill_id, inventory_item_id) — the latter
+would wrongly reject the second legitimate line.
+
+**Schema + RPC drafted:** `supabase-stock-sync.sql` (NOT applied yet).
+Contains: `mh_categories.deducts_stock` flag, `mh_item_map` (menu name ->
+inventory item + `qty_per_unit` ratio), `mh_stock_sync_log` (audit, unique on
+bill+menu name), `mh_preview_bill_stock(bill_id)` (read-only resolve, drives
+the unmapped prompt), `mh_apply_bill_stock(bill_id)` (atomic + idempotent
+apply, cutoff 2026-07-08 enforced inside, `qty = qty - x` decrement),
+`mh_stock_sync_pending` view (settled bills that never synced), plus RLS.
+
+**Still to verify before running:** actual column names of `mh_categories`
+(assumed `id`, `name`) and that `mh_customers.items` elements expose `name`,
+`qty`, and `category` keys.
 
 **Hard constraint — do NOT reuse the current client-side stock update
 pattern.** Existing `MoveSheet` does a read-modify-write on `qty` from a
@@ -131,6 +146,9 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **R1 schema + RPC drafted** in `supabase-stock-sync.sql` after user resolved
+  all four blockers (menu names only, no duplicate lines, billing app doesn't
+  touch stock, categories come from `mh_categories`). Not applied yet.
 - **R1 architecture decided:** billing app initiates on settle (resolves
   mappings, prompts on unmapped items), then calls one atomic Postgres RPC
   that inserts the stock moves, decrements qty, and writes a deduction audit
