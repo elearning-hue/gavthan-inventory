@@ -29,6 +29,13 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 
 ## Features
 
+- [TODO] Unsettled entries excluded from totals. `settled === false` rows no
+  longer count toward Income / Expense / Net stat tiles or the cashflow
+  chart — they are pending, not realized. Shown separately as
+  "+X pending" under each tile, plus "N unsettled entries excluded" under
+  Net. Rows with `settled` null/undefined (legacy/imported) still COUNT
+  (predicate is `settled !== false`, not `settled === true`) — do not
+  change this or historic rows vanish from totals. Port same predicate.
 - [TODO] Settle-status filter button beside Export in ledger header.
   Cycles All → Unsettled (red, shows count) → Settled (green). Filters
   entry list, resets pagination on change. Port filter logic + 3-state
