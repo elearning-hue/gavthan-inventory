@@ -60,20 +60,40 @@ Orders before cutoff are historical — never retro-trigger.
 - Audit: tie every deduction to the settled `order_id`/bill id for
   reconciliation.
 
+**DECIDED 2026-07-08 — architecture: billing app initiates, DB executes.**
+Not a pure DB trigger, not raw client writes. Split:
+- Billing app, on settle: resolve bill lines via mapping table; if an item in
+  a target category is unmapped, **prompt the user** (map now / skip once);
+  then call ONE Postgres RPC with bill_id + resolved lines.
+- RPC does everything in a single transaction: insert `mh_stock_moves` rows,
+  decrement `qty` atomically (`qty = qty - x` — never client read-then-write),
+  insert deduction-audit row keyed to bill_id.
+- Unique constraint on (bill_id, item_id) in the audit table = re-settle or
+  double-tap cannot double-deduct.
+
+Rationale: a pure DB trigger cannot prompt a human, so on an unmapped item it
+must either skip silently (inventory drifts — the exact failure requirement 2
+forbids) or raise and block bill settlement (unacceptable at service time).
+The user is present at settle, so that is the right moment to ask. But raw
+client-side table writes would repeat this repo's existing A-P0-2 lost-update
+race and A-P1-1 partial-write drift, hence the single atomic RPC.
+
+**Safety net:** bills settled outside that path (direct DB edit, a future
+client) deduct nothing. Add a reconcile view listing settled bills with no
+deduction record — reuse the existing "Reconcile bills" pattern already used
+for ledger sales import.
+
 **Decisions still needed (blockers):**
 1. Do bill line items carry a stable menu-item id, or only a name string?
    If name-only, `category_item_mappings` must key on normalized name, not
    `gavthan_item_id`. **Verify in billing app repo / DB before schema work.**
-2. Where does the trigger run? Options: Postgres trigger/function on
-   `mh_customers` update (best — atomic, works even if either client is
-   closed), Supabase Edge Function, or client-side in billing app (worst —
-   only fires if that app is open, and duplicates on retry).
-   **Recommendation: DB-side trigger + function.**
-3. Idempotency: a bill can be re-settled/edited. Deduction must not double
-   apply. Needs unique constraint on (bill_id, item_id) in the deduction
-   audit log, or a `synced_at` flag on the bill.
-4. Does the billing app already deduct anything today? If yes, avoid double
+2. Idempotency key confirmed as (bill_id, item_id) — but confirm bills cannot
+   legitimately contain the same item twice as separate lines; if they can,
+   key on (bill_id, line_index) instead.
+3. Does the billing app already deduct anything today? If yes, avoid double
    deduction.
+4. Target-category names must match exactly between menu and mapping
+   ("Cold Drinks" vs "Cold Drink") — confirm the canonical strings.
 
 **Hard constraint — do NOT reuse the current client-side stock update
 pattern.** Existing `MoveSheet` does a read-modify-write on `qty` from a
@@ -111,6 +131,12 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **R1 architecture decided:** billing app initiates on settle (resolves
+  mappings, prompts on unmapped items), then calls one atomic Postgres RPC
+  that inserts the stock moves, decrements qty, and writes a deduction audit
+  row. Rejected pure DB trigger (cannot prompt a human; would either drift
+  silently or block settlement) and rejected raw client-side table writes
+  (repeats the A-P0-2 lost-update race). See R1 above.
 - Created this `memory.md`. Logged R1 cross-app inventory sync request.
 - **Unsettled entries excluded from totals.** `settled === false` no longer
   counts toward Income/Expense/Net or the cashflow chart; pending amounts
