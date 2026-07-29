@@ -19,7 +19,9 @@ each section.
 - **Both apps share ONE Supabase database.**
 - Working branch: `spatial-ui-design`. Main branch: `main`.
 - Companion docs: `inn.md` (UI spec for Android port), `android-sync.md`
-  (web→Capacitor change log), `supabase-rls.sql` (drafted, NOT applied).
+  (web→Capacitor change log), `settle-flag-spec.md` (settled-only totals,
+  functional spec + test vectors), `supabase-rls.sql` (drafted, NOT applied),
+  `supabase-stock-sync.sql` (R1 draft, NOT applied).
 
 ### Known DB tables (as used by this app)
 | Table | Purpose | Key columns seen |
@@ -146,6 +148,11 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **`settle-flag-spec.md` written** — functional spec for the settled-only
+  totals rule so the Android app can implement it identically. Includes the
+  `settled != false` predicate rationale (null/legacy rows must keep
+  counting), formulas, UI strings, what deliberately does NOT change, and a
+  5-row test vector whose key assertion is `income == 1250`.
 - **R1 schema + RPC drafted** in `supabase-stock-sync.sql` after user resolved
   all four blockers (menu names only, no duplicate lines, billing app doesn't
   touch stock, categories come from `mh_categories`). Not applied yet.
