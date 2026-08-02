@@ -139,6 +139,16 @@ or derive qty from the sum of `mh_stock_moves`.
 - [ ] `mh_ledger.reversed boolean default false` — **required** by the
       shipped Reversal Entry feature. If missing, the reverse action's flag
       update silently no-ops and an entry can be reversed twice.
+      ```sql
+      ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS reversed BOOLEAN NOT NULL DEFAULT FALSE;
+      ```
+- [ ] `mh_ledger.partially_settled boolean default false` — **required** by
+      the shipped Partial Settlement feature. Without it the split still works
+      and totals stay correct, but the "already split" guard doesn't persist,
+      so the Partial payment action stays offered on an entry already split.
+      ```sql
+      ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS partially_settled BOOLEAN NOT NULL DEFAULT FALSE;
+      ```
 - [ ] `supabase-rls.sql` policies (see A-P0-1).
 - [ ] unique index `mh_ledger (source, ref) where ref is not null`.
 - [ ] R1 mapping + deduction-audit tables (schema TBD, see blockers).
@@ -148,6 +158,31 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **Ported two Android ledger changes** (source: android repo
+  `inventory_android_app`, branch `claude/great-sanderson-23abf1`, file
+  `web-changes-since-2.9.1.md`):
+  1. **Reversal pairs excluded from totals.** New `countsEntry(e)` predicate
+     (`!e.reversed && e.source!=="reversal"`) applied everywhere
+     `isSettledEntry` already was — income, expense, pending sums,
+     unsettledCount, chartBase. Fixes gross tiles: a reversed 1000 sale used
+     to read as income 1000 + expense 1000; now neither side counts. Net was
+     always right — the bug was the gross figures.
+  2. **Partial settlement.** On a settled income entry, "Partial payment"
+     records cash received and splits the shortfall into an unsettled income
+     row (the receivable, excluded from totals so it shows as pending) plus a
+     settled expense row of the same amount (keeps Dr/Cr balanced). Original
+     untouched, flagged `partially_settled`. Both new rows carry the
+     ORIGINAL entry's date, not today — else splitting an old bill scatters
+     the pair into the current period and Dr/Cr looks unbalanced under a date
+     filter. Balancing row's settle toggle is locked (generated, not entered)
+     but NOT dimmed, since it still counts fully toward Expense.
+     Known tradeoff carried over from Android: the balancing expense inflates
+     the standalone Expense tile (it's contra-revenue, not a real cost). Net
+     and Dr/Cr stay correct.
+  Verified against the spec's test vectors: `income == 1250` (not 2250,
+  proving reversal exclusion), partial 1000-bill/600-paid gives
+  income 1000 / expense 400 / net 600 / pending 400, and after settling the
+  rest income 1400 / net 1000.
 - **`settle-flag-spec.md` written** — functional spec for the settled-only
   totals rule so the Android app can implement it identically. Includes the
   `settled != false` predicate rationale (null/legacy rows must keep
