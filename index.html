@@ -1168,9 +1168,16 @@
     // and must NOT count toward Income / Expense / Net until flipped to "Yes";
     // they are surfaced separately as "pending" so nothing goes invisible.
     const isSettledEntry=(e)=> e.settled!==false;
+    // A reversed entry and the reversal posted against it cancel out, but each
+    // was still inflating the GROSS Income / Expense tiles by its own amount
+    // (a reversed 1000 sale read as income 1000 + expense 1000). Voided money
+    // never moved — neither side counts toward any total.
+    const isReversal=(e)=> e.source==="reversal";
+    const countsEntry=(e)=> !e.reversed && !isReversal(e);
     const sumOf=(list,k)=> list.filter(e=>kindOf(e)===k).reduce((s,e)=>s+num(e.amount),0);
-    const settledEntries=useMemo(()=> periodEntries.filter(isSettledEntry),[periodEntries]);
-    const unsettledEntries=useMemo(()=> periodEntries.filter(e=>!isSettledEntry(e)),[periodEntries]);
+    const countedEntries=useMemo(()=> periodEntries.filter(countsEntry),[periodEntries]);
+    const settledEntries=useMemo(()=> countedEntries.filter(isSettledEntry),[countedEntries]);
+    const unsettledEntries=useMemo(()=> countedEntries.filter(e=>!isSettledEntry(e)),[countedEntries]);
     const income = useMemo(()=> sumOf(settledEntries,"income"),[settledEntries]);
     const expense= useMemo(()=> sumOf(settledEntries,"expense"),[settledEntries]);
     const net = income-expense;
@@ -1184,7 +1191,7 @@
     // dashboard applies its own date period (week / 15d / month / 6m / year),
     // independent of the page's date mode. Unsettled entries are excluded so the
     // chart agrees with the Income / Expense / Net tiles.
-    const chartBase=useMemo(()=> entries.filter(e=> isSettledEntry(e)&&matchStaff(e)&&matchCat(e)&&matchText(e)),[entries,staff,catF,q]);
+    const chartBase=useMemo(()=> entries.filter(e=> countsEntry(e)&&isSettledEntry(e)&&matchStaff(e)&&matchCat(e)&&matchText(e)),[entries,staff,catF,q]);
 
     // ----- pagination (10 / page, same pattern as billing history) -----
     const totalPages=Math.max(1,Math.ceil(shown.length/PAGE_SIZE));
@@ -1278,6 +1285,51 @@
       setReversing(false);
     }
 
+    /* ---- partial settlement ----
+       Customer paid part of a settled income entry (usually an imported bill).
+       Split the shortfall WITHOUT touching the original: an unsettled income
+       row for the balance still owed (excluded from totals, surfaces as
+       "pending"), plus a settled expense row of the same amount so the Dr/Cr
+       columns stay balanced. Net therefore falls to the cash actually taken. */
+    const [partial,setPartial]=useState(null);   // entry being split
+    const [partialAmt,setPartialAmt]=useState("");
+    const [partialBusy,setPartialBusy]=useState(false);
+    const isPartialRow=(e)=> e.source==="partial";
+    const canPartial=(e)=> kindOf(e)==="income" && isSettledEntry(e)
+      && !e.reversed && !isReversal(e) && !isPartialRow(e) && !e.partially_settled;
+
+    async function savePartial(){
+      const e=partial; if(!e) return;
+      const paid=num(partialAmt), total=num(e.amount);
+      if(!(paid>0 && paid<total)) return;
+      const remaining=Math.round((total-paid)*100)/100;
+      if(remaining<=0) return;
+      setPartialBusy(true);
+      try{
+        // Both rows carry the ORIGINAL entry's date, never today's — else
+        // splitting an older bill scatters the pair into the current period
+        // while the bill stays in the past, leaving Dr/Cr visibly unbalanced
+        // under a month / date-range filter.
+        const when=dateOf(e)||todayISO();
+        const label=e.note||e.category||"entry";
+        const { error:e1 } = await sb.from("mh_ledger").insert({
+          entry_type:"income", amount:remaining, category:e.category||"Partial",
+          note:"Outstanding: "+label, entry_date:when, mode:e.mode||null,
+          source:"partial", ref:String(e.id), created_by:meEmail, settled:false });
+        if(e1) throw e1;
+        const { error:e2 } = await sb.from("mh_ledger").insert({
+          entry_type:"expense", amount:remaining, category:e.category||"Partial",
+          note:"Balancing entry for outstanding: "+label, entry_date:when, mode:null,
+          source:"partial", ref:String(e.id), created_by:meEmail });
+        if(e2) throw e2;
+        const { error:e3 } = await sb.from("mh_ledger").update({ partially_settled:true }).eq("id",e.id);
+        if(e3) throw e3;
+        toast("Partial payment recorded");
+        setPartial(null); setPartialAmt(""); setDetail(null); await load();
+      }catch(err){ toastErr(err.message||"Couldn't record payment"); }
+      setPartialBusy(false);
+    }
+
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading cashbook…</div></div></div>`;
 
     return html`<div class="wrap">
@@ -1362,15 +1414,21 @@
             </div>
             ${pageItems.map(e=>{ const isInc=kindOf(e)==="income"; const p=dateOf(e).split("-");
               const dmy=p.length===3?(p[2]+"/"+p[1]+"/"+p[0].slice(2)):dateOf(e);
-              return html`<div class=${"ltrow"+(e.reversed||e.source==="reversal"?" ltrow-void":"")} key=${e.id} aria-label=${"View entry: "+(e.note||e.category||"entry")} ...${clickable(()=>setDetail(e))}>
+              // The generated balancing expense of a partial split is locked: it
+              // still counts fully toward Expense (so it is NOT dimmed like a
+              // voided row), but toggling it would desync it from its pair.
+              const isBalancing = isPartialRow(e) && kindOf(e)==="expense";
+              return html`<div class=${"ltrow"+(e.reversed||isReversal(e)?" ltrow-void":"")} key=${e.id} aria-label=${"View entry: "+(e.note||e.category||"entry")} ...${clickable(()=>setDetail(e))}>
                 <span class="lt-date">${dmy}</span>
                 <span class="lt-desc">
                   <b class="ell">${e.note|| (isInc?"Income":"Expense")}</b>
-                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}${e.reversed?" · reversed":""}${e.source==="reversal"?" · reversal":""}</div>
+                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}${e.reversed?" · reversed":""}${isReversal(e)?" · reversal":""}${isPartialRow(e)?(isInc?" · outstanding":" · balancing · locked"):""}${e.partially_settled?" · part paid":""}</div>
                 </span>
                 <span class="lt-amt lt-dr">${isInc?numFmt(e.amount):""}</span>
                 <span class="lt-amt lt-cr">${isInc?"":numFmt(e.amount)}</span>
-                <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} onClick=${(ev)=>{ev.stopPropagation();setSettle(e.id, e.settled===false);}}>${e.settled===false?"No":"Yes"}</button></span>
+                <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} disabled=${isBalancing}
+                  title=${isBalancing?"Generated balancing entry — locked":"Toggle settle"}
+                  onClick=${(ev)=>{ev.stopPropagation(); if(!isBalancing) setSettle(e.id, e.settled===false);}}>${e.settled===false?"No":"Yes"}</button></span>
               </div>`; })}
           </div>`}
         ${shown.length>PAGE_SIZE && html`<div class="pager">
@@ -1398,15 +1456,41 @@
             <div class="v">${money(detail.amount)}</div>
           </div>
         </div>
+        ${isPartialRow(detail) && html`<div class="banner net" style=${{marginTop:12}}>${kindOf(detail)==="income"
+          ? "Outstanding balance from a partial payment (of #"+detail.ref+"). Settle it when the rest is received."
+          : "Balancing entry for a partial payment (of #"+detail.ref+"). Generated automatically and locked — it offsets the outstanding amount."}</div>`}
+        ${detail.partially_settled && html`<div class="banner net" style=${{marginTop:12}}>A partial payment has already been recorded against this entry.</div>`}
         ${detail.reversed
           ? html`<div class="banner net" style=${{marginTop:12}}>This entry has already been reversed. No further action needed.</div>`
-          : detail.source==="reversal"
+          : isReversal(detail)
           ? html`<div class="banner net" style=${{marginTop:12}}>This is itself a reversal entry (of #${detail.ref}) — it can't be reversed again.</div>`
           : html`<div>
+              ${canPartial(detail) && html`<div>
+                <p class="tiny muted" style=${{margin:"12px 2px"}}>Customer paid only part of this? Record what was received — the shortfall stays on the books as an unsettled (pending) amount instead of counting as income.</p>
+                <button class="btn sec" onClick=${()=>{ setPartial(detail); setPartialAmt(""); }}>Partial payment</button>
+              </div>`}
               <p class="tiny muted" style=${{margin:"12px 2px"}}>No delete — voiding this entry posts an equal, opposite ${kindOf(detail)==="income"?"expense":"income"} entry dated today, and marks the original as reversed. Both stay in the ledger for audit.</p>
               <button class="btn danger" disabled=${reversing} onClick=${()=>{ if(confirm("Reverse this entry? This posts an opposing "+money(detail.amount)+" entry and cannot be undone.")) reverseEntry(detail); }}>${reversing?"Reversing…":"Reversal entry"}</button>
             </div>`}
     </${Sheet}>`}
+    ${partial && html`<${Sheet} onClose=${()=>{setPartial(null);setPartialAmt("");}} title="Partial payment">
+        <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
+          <b>${partial.note||partial.category||"Entry"}</b><br/>
+          <span class="tiny muted">Billed ${money(partial.amount)} · ${dateOf(partial)}</span>
+        </div>
+        <label>Amount received</label>
+        <input value=${partialAmt} onChange=${ev=>setPartialAmt(ev.target.value)} inputMode="decimal" autoFocus placeholder="0"/>
+        ${(()=>{ const paid=num(partialAmt), total=num(partial.amount);
+          if(!partialAmt.trim()) return null;
+          if(!(paid>0)) return html`<div class="banner" style=${{marginTop:12}}>Enter an amount greater than 0.</div>`;
+          if(paid>=total) return html`<div class="banner" style=${{marginTop:12}}>That's the full amount or more — use the Settle toggle instead.</div>`;
+          const rem=Math.round((total-paid)*100)/100;
+          return html`<div class="banner net" style=${{marginTop:12}}>${money(rem)} stays outstanding. An unsettled income entry for it will be added, plus a matching expense so debits and credits balance.</div>`;
+        })()}
+        <div class="sheet-foot">
+          <button class="btn" disabled=${partialBusy||!(num(partialAmt)>0&&num(partialAmt)<num(partial.amount))} onClick=${savePartial}>${partialBusy?"Saving…":"Record payment"}</button>
+        </div>
+      </${Sheet}>`}
     ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} live=${liveSales} imported=${importedSales} onClose=${()=>setRecon(false)}/>`}
     ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}

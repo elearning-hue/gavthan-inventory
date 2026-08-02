@@ -29,7 +29,12 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 
 ## Features
 
-- [TODO] Unsettled entries excluded from totals. `settled === false` rows no
+- [DONE] Reversal pairs excluded from totals + Partial settlement — ported
+  FROM android (`web-changes-since-2.9.1.md`), web now matches. No port back
+  needed. Needs `mh_ledger.partially_settled` column in DB.
+- [TODO] Unsettled entries excluded from totals — **full spec in
+  `settle-flag-spec.md`** (formulas, UI text, test vectors). Summary:
+  `settled === false` rows no
   longer count toward Income / Expense / Net stat tiles or the cashflow
   chart — they are pending, not realized. Shown separately as
   "+X pending" under each tile, plus "N unsettled entries excluded" under
