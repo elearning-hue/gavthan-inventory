@@ -1777,7 +1777,6 @@
   function Inventory({me,online}){
     const [items,setItems]=useState([]);
     const [moves,setMoves]=useState([]);
-    const [suppliers,setSuppliers]=useState([]);
     const [loading,setLoading]=useState(true);
     const [q,setQ]=useState(""); const [filter,setFilter]=useState("all"); // all | low
     const [edit,setEdit]=useState(null);   // item or {} for new
@@ -1790,15 +1789,13 @@
       // ItemSheet/MoveSheet unmounts and the user loses what they were typing.
       if(!loadedOnce.current) setLoading(true);
       try{
-        const [i,m,s]=await Promise.all([
+        const [i,m]=await Promise.all([
           sb.from("mh_inventory_items").select("*").order("name"),
-          sb.from("mh_stock_moves").select("*").order("created_at",{ascending:false}).limit(300),
-          sb.from("mh_parties").select("id,name").eq("type","supplier").order("name")
+          sb.from("mh_stock_moves").select("*").order("created_at",{ascending:false}).limit(300)
         ]);
         if(i.error) throw i.error;
         setItems((i.data||[]).filter(x=>x.active!==false));
         setMoves(m.data||[]);
-        setSuppliers(s.data||[]);
         loadedOnce.current=true;
       }catch(err){ toastErr(err.message||"Load failed"); }
       setLoading(false);
@@ -1865,9 +1862,9 @@
 
     <div class="fab"><button class="btn" onClick=${()=>setEdit({})}><${Icon} name="plus"/>New item</button></div>
 
-    ${edit && html`<${ItemSheet} item=${edit} suppliers=${suppliers} me=${me}
+    ${edit && html`<${ItemSheet} item=${edit} me=${me}
         onClose=${()=>setEdit(null)} onSaved=${()=>{setEdit(null);load();}}/>`}
-    ${moveFor && html`<${MoveSheet} item=${moveFor} suppliers=${suppliers} me=${me}
+    ${moveFor && html`<${MoveSheet} item=${moveFor} me=${me}
         onClose=${()=>setMoveFor(null)} onSaved=${()=>{setMoveFor(null);load();}}/>`}
     ${history && html`<${Sheet} onClose=${()=>setHistory(false)} title="Stock movement history">
         ${moves.length===0? html`<div class="empty">No movements</div>`
@@ -1890,12 +1887,12 @@
     </div>`;
   }
 
-  function ItemSheet({item,suppliers,me,onClose,onSaved}){
+  function ItemSheet({item,me,onClose,onSaved}){
     const isNew=!item.id;
     const [f,setF]=useState({
       name:item.name||"", category:item.category||"", unit:item.unit||"kg",
       qty:item.qty!=null?String(item.qty):"0", reorder_level:item.reorder_level!=null?String(item.reorder_level):"0",
-      cost_price:item.cost_price!=null?String(item.cost_price):"", supplier_id:item.supplier_id||"" });
+      cost_price:item.cost_price!=null?String(item.cost_price):"" });
     const [busy,setBusy]=useState(false);
     const set=(k)=>(e)=> setF(o=>({...o,[k]:e.target.value}));
     async function save(){
@@ -1904,7 +1901,7 @@
       try{
         const row={ name:f.name.trim(), category:f.category.trim()||null, unit:f.unit.trim()||"unit",
           reorder_level:num(f.reorder_level), cost_price:num(f.cost_price)||0,
-          supplier_id:f.supplier_id||null, updated_at:new Date().toISOString() };
+          updated_at:new Date().toISOString() };
         if(isNew){
           row.qty=num(f.qty); row.created_by=me&&me.email; row.active=true;
           const { error } = await sb.from("mh_inventory_items").insert(row); if(error) throw error;
@@ -1933,11 +1930,6 @@
         <div class="grow"><label>Reorder level</label><input value=${f.reorder_level} onChange=${set("reorder_level")} inputMode="decimal"/></div>
         <div class="grow"><label>Cost / ${f.unit||"unit"}</label><input value=${f.cost_price} onChange=${set("cost_price")} inputMode="decimal" placeholder="0"/></div>
       </div>
-      <label>Supplier (optional)</label>
-      <select value=${f.supplier_id} onChange=${set("supplier_id")}>
-        <option value="">— none —</option>
-        ${suppliers.map(s=> html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
-      </select>
       ${!isNew && html`<p class="tiny muted" style=${{marginTop:10}}>To change the stock count, tap the item and record a movement instead — that keeps an audit trail.</p>`}
       <div style=${{height:14}}></div>
       <button class="btn" disabled=${busy||!f.name.trim()} onClick=${save}>${busy?"Saving…":isNew?"Add item":"Save changes"}</button>
@@ -1945,13 +1937,11 @@
     </${Sheet}>`;
   }
 
-  function MoveSheet({item,suppliers,me,onClose,onSaved}){
+  function MoveSheet({item,me,onClose,onSaved}){
     const [type,setType]=useState("in");
     const [qty,setQty]=useState(""); const [cost,setCost]=useState(item.cost_price?String(item.cost_price):"");
     const [note,setNote]=useState(""); const [date,setDate]=useState(todayISO());
-    const [supplierLedger,setSupplierLedger]=useState(false);
     const [busy,setBusy]=useState(false);
-    const supplier = suppliers.find(s=>s.id===item.supplier_id);
     const cur=num(item.qty);
     const q=num(qty);
     const projected = type==="in"? cur+q : type==="adjust"? q : cur-q;
@@ -1972,17 +1962,6 @@
         if(type==="in" && num(cost)>0) upd.cost_price=num(cost);
         const { error:e2 } = await sb.from("mh_inventory_items").update(upd).eq("id",item.id);
         if(e2) throw e2;
-        // optional: also post to supplier ledger as a purchase (credit = you owe them)
-        if(type==="in" && supplierLedger && item.supplier_id && num(cost)>0){
-          const amount=q*num(cost);
-          // Cashbook classifies anything !== "expense" as income, so this MUST be
-          // "expense" — a purchase is money out, not income. (Was "credit" → the
-          // cashbook silently booked every supplier purchase as income.)
-          const { error:e3 } = await sb.from("mh_ledger").insert({
-            party_id:item.supplier_id, entry_type:"expense", amount, category:"Supplies / Purchase", mode:"credit",
-            note:"Purchase: "+item.name+" ×"+q, entry_date:date, source:"manual", created_by:me&&me.email });
-          if(e3) throw e3;
-        }
         toast("Stock updated"); onSaved();
       }catch(err){ toastErr(err.message||"Save failed"); setBusy(false); }
     }
@@ -2002,9 +1981,6 @@
       ${type==="in" && html`<div>
         <label>Cost / ${item.unit||"unit"} (optional, updates item cost)</label>
         <input value=${cost} onChange=${e=>setCost(e.target.value)} inputMode="decimal" placeholder="0"/>
-        ${item.supplier_id && html`<label class="row" style=${{textTransform:'none',letterSpacing:0,marginTop:12,gap:8,alignItems:'center'}}>
-          <input type="checkbox" style=${{width:18,height:18}} checked=${supplierLedger} onChange=${e=>setSupplierLedger(e.target.checked)}/>
-          <span>Also add ${money(q*num(cost))} to ${supplier?supplier.name:"supplier"}’s ledger</span></label>`}
       </div>`}
       <label>Date</label><input type="date" value=${date} onChange=${e=>setDate(e.target.value)}/>
       <label>Note (optional)</label><input value=${note} onChange=${e=>setNote(e.target.value)} placeholder="invoice no, reason…"/>
