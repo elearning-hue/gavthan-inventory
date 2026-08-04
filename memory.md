@@ -31,7 +31,7 @@ each section.
 | `mh_stock_moves` | stock audit trail | item_id, move_type (in/out/waste/adjust), qty, unit_cost, note, move_date, created_by |
 | `mh_customers` | bills from billing app | status ("settled"), items (JSON), bill_no, name, phone, added_by, date, discount_on, discount_pct, adjustment_on, adjustment |
 | `mh_users` | staff profiles | email, display_name, role (admin/staff), active |
-| `mh_parties` | suppliers | id, name, type |
+| ~~`mh_parties`~~ | suppliers — **being dropped**, web refs removed 2026-07-08, android still TODO (see `drop-mh-parties.md`) | id, name, type |
 
 Bill settled test: `status === "settled"`.
 Bill line items: `mh_customers.items` is a **JSON array/string**, elements
@@ -158,6 +158,16 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **Removed all `mh_parties` (supplier) dependencies from the web app** ahead
+  of dropping the table: suppliers state + query, the supplier dropdown on
+  ItemSheet, and the "also add to supplier's ledger" checkbox + ledger post on
+  MoveSheet. Zero `mh_parties|supplier|party_id` matches left in `index.html`.
+  **Feature loss:** nothing auto-posts a stock purchase into the cashbook
+  anymore — purchases update stock only, the money side is manual. Can be
+  re-added supplier-free if wanted.
+  Android app still has 8 files referencing it — full site list + drop SQL in
+  `drop-mh-parties.md`. GitHub code-search API reports 0 hits on that private
+  repo (not indexed) — clone and grep, don't trust the search API.
 - **Ported two Android ledger changes** (source: android repo
   `inventory_android_app`, branch `claude/great-sanderson-23abf1`, file
   `web-changes-since-2.9.1.md`):
