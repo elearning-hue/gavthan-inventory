@@ -1844,6 +1844,8 @@
     const [edit,setEdit]=useState(null);   // item or {} for new
     const [moveFor,setMoveFor]=useState(null);
     const [history,setHistory]=useState(null);
+    const [mvPage,setMvPage]=useState(0);
+    const MOVES_PAGE_SIZE=10;
     const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
 
     const load=useCallback(async()=>{
@@ -1883,6 +1885,15 @@
         .sort((a,b)=> (isLow(b)-isLow(a)) || (a.name||"").localeCompare(b.name||""));
     },[items,q,filter]);
 
+    // ----- stock-move pagination (10 / page, same pattern as the ledger) -----
+    const mvTotalPages=Math.max(1,Math.ceil(moves.length/MOVES_PAGE_SIZE));
+    const mvSafePage=Math.min(mvPage,mvTotalPages-1);
+    const mvPageItems=useMemo(()=> moves.slice(mvSafePage*MOVES_PAGE_SIZE,(mvSafePage+1)*MOVES_PAGE_SIZE),[moves,mvSafePage]);
+    const mvPageBtns=useMemo(()=>{
+      const out=[]; let lo=Math.max(0,mvSafePage-2), hi=Math.min(mvTotalPages-1,lo+4); lo=Math.max(0,hi-4);
+      for(let p=lo;p<=hi;p++) out.push(p); return out;
+    },[mvSafePage,mvTotalPages]);
+
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading stock…</div></div></div>`;
 
     return html`<div class="wrap">
@@ -1915,10 +1926,18 @@
           </div>`)}
       </div>
 
-      <div class="card"><div class="hd"><h3>Recent stock moves</h3>
+      <div class="card"><div class="hd">
+        <h3>Stock moves${moves.length>MOVES_PAGE_SIZE?(" · page "+(mvSafePage+1)+"/"+mvTotalPages):""}</h3>
         <button class="btn ghost sm" onClick=${()=>setHistory(true)}>View all</button></div>
-        ${moves.slice(0,6).map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
+        ${mvPageItems.map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
         ${moves.length===0 && html`<div class="empty"><${Icon} name="folder"/>No movements recorded</div>`}
+        ${moves.length>MOVES_PAGE_SIZE && html`<div class="pager">
+          <button class="btn ghost sm" disabled=${mvSafePage===0} onClick=${()=>setMvPage(Math.max(0,mvSafePage-1))}>← Prev</button>
+          <div class="pgnums">
+            ${mvPageBtns.map(p=> html`<button key=${p} class=${"pgn"+(p===mvSafePage?" on":"")} onClick=${()=>setMvPage(p)}>${p+1}</button>`)}
+          </div>
+          <button class="btn ghost sm" disabled=${mvSafePage>=mvTotalPages-1} onClick=${()=>setMvPage(Math.min(mvTotalPages-1,mvSafePage+1))}>Next →</button>
+        </div>`}
       </div>
     </div>
 
