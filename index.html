@@ -1846,6 +1846,12 @@
     const [history,setHistory]=useState(null);
     const [mvPage,setMvPage]=useState(0);
     const MOVES_PAGE_SIZE=10;
+    const MOVES_CHUNK=300;
+    // How many moves to fetch. Grows by a chunk whenever the pager reaches the
+    // end of what's loaded. Kept as the fetch limit (rather than appending to
+    // `moves`) so a realtime refresh re-reads the same window instead of
+    // silently throwing away the older pages the user already paged into.
+    const [mvLimit,setMvLimit]=useState(MOVES_CHUNK);
     const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
 
     const load=useCallback(async()=>{
@@ -1855,7 +1861,7 @@
       try{
         const [i,m]=await Promise.all([
           sb.from("mh_inventory_items").select("*").order("name"),
-          sb.from("mh_stock_moves").select("*").order("created_at",{ascending:false}).limit(300)
+          sb.from("mh_stock_moves").select("*").order("created_at",{ascending:false}).limit(mvLimit)
         ]);
         if(i.error) throw i.error;
         setItems((i.data||[]).filter(x=>x.active!==false));
@@ -1863,7 +1869,7 @@
         loadedOnce.current=true;
       }catch(err){ toastErr(err.message||"Load failed"); }
       setLoading(false);
-    },[]);
+    },[mvLimit]);
     useEffect(()=>{ load(); },[load]);
     // Live updates: stock items + stock moves pushed from the server refresh instantly.
     const live=useRealtime(["mh_inventory_items","mh_stock_moves"], load);
@@ -1893,6 +1899,12 @@
       const out=[]; let lo=Math.max(0,mvSafePage-2), hi=Math.min(mvTotalPages-1,lo+4); lo=Math.max(0,hi-4);
       for(let p=lo;p<=hi;p++) out.push(p); return out;
     },[mvSafePage,mvTotalPages]);
+    // A full result set means the server probably has older rows still unread.
+    const mvHasMore = moves.length>=mvLimit;
+    const mvFetchingOlder = mvHasMore && mvSafePage>=mvTotalPages-1;
+    // Landing on the last page pulls the next chunk. Once it arrives the list
+    // grows, so this page is no longer the last and the effect stops firing.
+    useEffect(()=>{ if(mvFetchingOlder) setMvLimit(l=> l+MOVES_CHUNK); },[mvFetchingOlder]);
 
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading stock…</div></div></div>`;
 
@@ -1936,7 +1948,10 @@
           <div class="pgnums">
             ${mvPageBtns.map(p=> html`<button key=${p} class=${"pgn"+(p===mvSafePage?" on":"")} onClick=${()=>setMvPage(p)}>${p+1}</button>`)}
           </div>
-          <button class="btn ghost sm" disabled=${mvSafePage>=mvTotalPages-1} onClick=${()=>setMvPage(Math.min(mvTotalPages-1,mvSafePage+1))}>Next →</button>
+          <button class="btn ghost sm" disabled=${mvSafePage>=mvTotalPages-1 && !mvHasMore} onClick=${()=>setMvPage(Math.min(mvTotalPages-1,mvSafePage+1))}>Next →</button>
+        </div>`}
+        ${mvFetchingOlder && html`<div class="tiny muted" style=${{textAlign:"center",padding:"0 14px 12px"}}>
+          <span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)',width:12,height:12}}></span> Loading older moves…
         </div>`}
       </div>
     </div>

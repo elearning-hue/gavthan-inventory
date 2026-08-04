@@ -158,6 +158,13 @@ or derive qty from the sum of `mh_stock_moves`.
 ## ACTIONS TAKEN (newest first)
 
 ### 2026-07-08
+- **Stock moves paginated 10/page** with the ledger's exact pager (clickable
+  numbers, 5-button window, safePage clamp). Card was a hard-coded
+  `slice(0,6)`. Reaching the last page now auto-fetches the next 300 by
+  growing the fetch limit — kept as a limit rather than appending, so a
+  realtime refresh re-reads the same window instead of discarding the older
+  pages the user paged into. Verified no fetch loop: settles once the server
+  returns fewer rows than the limit.
 - **Removed all `mh_parties` (supplier) dependencies from the web app** ahead
   of dropping the table: suppliers state + query, the supplier dropdown on
   ItemSheet, and the "also add to supplier's ledger" checkbox + ledger post on
