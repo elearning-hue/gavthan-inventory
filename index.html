@@ -1624,7 +1624,6 @@
         <div class="stat"><div class="k">On record</div><div class="v">${money(live)}</div></div>
         <div class="stat"><div class="k">Imported</div><div class="v">${money(imported)}</div></div>
       </div>
-      ${live!==imported && html`<div class="banner">Difference ${money(Math.abs(live-imported))}. Rows in red read as ₹0 — the amount couldn't be parsed from that bill.</div>`}
       <div class="tiny muted" style=${{margin:"12px 2px"}}>${rows.length} settled bills (oldest first)</div>
       ${sorted.map(b=> html`<div class="entry" key=${b.id}>
         <span class=${"dot "+(b.amount<=0?"d":"c")}></span>
