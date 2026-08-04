@@ -1236,10 +1236,37 @@
 
     // ----- sales reconciliation -----
     const importedRefs=useMemo(()=>{ const s=new Set(); entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null) s.add(String(e.ref)); }); return s; },[entries]);
+    // How much is actually STANDING in the cashbook per bill. A reversed row is
+    // voided money — it must not count as imported, or deleting/voiding a bill
+    // leaves "On record" and "Imported" permanently apart (the bill drops out of
+    // mh_customers so live falls, while the reversed row kept inflating imported).
+    const importedByRef=useMemo(()=>{ const m={}; entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null&&!e.reversed){ const k=String(e.ref); m[k]=(m[k]||0)+num(e.amount); } }); return m; },[entries]);
+    const billRowCount=useMemo(()=>{ const m={}; entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null&&!e.reversed){ const k=String(e.ref); m[k]=(m[k]||0)+1; } }); return m; },[entries]);
+    // Bills whose imported entry has been reversed — the sale was voided in the
+    // cashbook. Never offer to re-sync these; syncing would resurrect the money.
+    const voidedRefs=useMemo(()=>{ const s=new Set(); entries.forEach(e=>{ if(e.source==="bill"&&e.ref!=null&&e.reversed) s.add(String(e.ref)); }); return s; },[entries]);
+
+    // Re-point an imported bill's ledger row at the bill's current total.
+    async function syncBill(b){
+      const k=String(b.id);
+      if(voidedRefs.has(k)){ toastErr("Voided in the cashbook — re-import instead"); return; }
+      if((billRowCount[k]||0)!==1){ toastErr("Imported "+(billRowCount[k]||0)+"× — fix manually"); return; }
+      const row=entries.find(e=> e.source==="bill" && String(e.ref)===k && !e.reversed);
+      if(!row) return;
+      const { error } = await sb.from("mh_ledger").update({ amount:b.amount }).eq("id",row.id);
+      if(error){ toastErr(error.message||"Sync failed"); return; }
+      toast("Synced to "+money(b.amount)); await load();
+    }
     const billRows=useMemo(()=> bills.map(c=>({ id:c.id, bill_no:c.bill_no, name:c.name, added_by:c.added_by,
       date:(function(t){return t?new Date(t).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}):"";})(c.settled_at||c.date||c.bill_time||c.created_at), amount:billTotal(c) })),[bills]);
     const liveSales=useMemo(()=> billRows.reduce((s,b)=>s+b.amount,0),[billRows]);
-    const importedSales=useMemo(()=> entries.filter(e=>e.source==="bill").reduce((s,e)=>s+num(e.amount),0),[entries]);
+    const importedSales=useMemo(()=> entries.filter(e=>e.source==="bill"&&!e.reversed).reduce((s,e)=>s+num(e.amount),0),[entries]);
+    // Bill-sourced rows whose bill is no longer a settled bill on record — the bill
+    // was deleted or un-settled after import. Invisible in the list below (which
+    // iterates bills, not ledger rows), so surface them explicitly.
+    const billIdSet=useMemo(()=> new Set(billRows.map(b=>String(b.id))),[billRows]);
+    const orphanRows=useMemo(()=> entries.filter(e=> e.source==="bill" && e.ref!=null && !billIdSet.has(String(e.ref)))
+      .map(e=>({ id:e.id, ref:String(e.ref), amount:num(e.amount), note:e.note||"", date:dateOf(e), reversed:!!e.reversed })),[entries,billIdSet]);
     const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
     const zeroBills=useMemo(()=> billRows.filter(b=> b.amount<=0).length,[billRows]);
 
@@ -1491,7 +1518,10 @@
           <button class="btn" disabled=${partialBusy||!(num(partialAmt)>0&&num(partialAmt)<num(partial.amount))} onClick=${savePartial}>${partialBusy?"Saving…":"Record payment"}</button>
         </div>
       </${Sheet}>`}
-    ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} live=${liveSales} imported=${importedSales} onClose=${()=>setRecon(false)}/>`}
+    ${recon && html`<${ReconSheet} rows=${billRows} importedRefs=${importedRefs} importedByRef=${importedByRef}
+        billRowCount=${billRowCount} voidedRefs=${voidedRefs} orphanRows=${orphanRows}
+        live=${liveSales} imported=${importedSales}
+        onSync=${syncBill} onClose=${()=>setRecon(false)}/>`}
     ${xls && html`<${ExcelImportSheet} users=${users} userMap=${userMap} meEmail=${meEmail}
         onClose=${()=>setXls(false)} onSaved=${()=>{setXls(false);load();}}/>`}
     ${imp && html`<${ImportSalesSheet} count=${pending.length} total=${pending.reduce((s,b)=>s+b.amount,0)}
@@ -1617,23 +1647,55 @@
     </${Sheet}>`;
   }
 
-  function ReconSheet({rows,importedRefs,live,imported,onClose}){
+  function ReconSheet({rows,importedRefs,importedByRef,billRowCount,voidedRefs,orphanRows,live,imported,onSync,onClose}){
+    const [busyId,setBusyId]=useState(null);
+    const stateOf=(b)=>{
+      const k=String(b.id);
+      if(voidedRefs.has(k)) return { tag:"voided in cashbook", voided:true, drift:0, dupes:0 };
+      if(!importedRefs.has(k)) return { tag:"not imported", drift:0, dupes:0 };
+      const posted=num(importedByRef[k]||0), dupes=billRowCount[k]||0;
+      const drift=Math.round((b.amount-posted)*100)/100;
+      return { tag:"imported", posted, drift, dupes };
+    };
     const sorted=[...rows].sort((a,b)=> (Number(a.bill_no)||0)-(Number(b.bill_no)||0));
+    const drifted=sorted.filter(b=> stateOf(b).drift!==0 && importedRefs.has(String(b.id)));
+    const totalDrift=drifted.reduce((s,b)=> s+stateOf(b).drift,0);
+    async function sync(b){ setBusyId(b.id); await onSync(b); setBusyId(null); }
     return html`<${Sheet} onClose=${onClose} title="Sales reconciliation">
       <div class="stats" style=${{marginTop:4}}>
         <div class="stat"><div class="k">On record</div><div class="v">${money(live)}</div></div>
         <div class="stat"><div class="k">Imported</div><div class="v">${money(imported)}</div></div>
       </div>
-      ${live!==imported && html`<div class="banner">Difference ${money(Math.abs(live-imported))}. Rows in red read as ₹0 — the amount couldn't be parsed from that bill.</div>`}
-      <div class="tiny muted" style=${{margin:"12px 2px"}}>${rows.length} settled bills (oldest first)</div>
-      ${sorted.map(b=> html`<div class="entry" key=${b.id}>
-        <span class=${"dot "+(b.amount<=0?"d":"c")}></span>
+      ${drifted.length>0 && html`<div class="banner" style=${{marginTop:12}}>
+        ${drifted.length} bill${drifted.length===1?"":"s"} changed after import — the cashbook still holds the old figure
+        (${money(Math.abs(totalDrift))} out). Tap Sync on a row to post the bill's current total.
+      </div>`}
+      ${orphanRows.length>0 && html`<div>
+        <div class="tiny muted" style=${{margin:"14px 2px 6px",fontWeight:700,textTransform:"uppercase",letterSpacing:".05em"}}>No longer on record</div>
+        <div class="tiny muted" style=${{margin:"0 2px 8px"}}>Imported from a bill that has since been deleted or un-settled. Reversed ones are already voided and need nothing.</div>
+        ${orphanRows.map(o=> html`<div class="entry" key=${o.id}>
+          <span class=${"dot "+(o.reversed?"c":"d")}></span>
+          <div class="grow">
+            <div><b class="ell">${o.note||"(bill entry)"}</b></div>
+            <div class="tiny muted">${fmtDate(o.date)} · ${o.reversed?"reversed — already voided":"still counted — reverse it to void"}</div>
+          </div>
+          <div class="amt" style=${{color:o.reversed?'var(--muted)':'var(--debit)'}}>${money(o.amount)}</div>
+        </div>`)}
+      </div>`}
+      <div class="tiny muted" style=${{margin:"14px 2px 6px",fontWeight:700,textTransform:"uppercase",letterSpacing:".05em"}}>${rows.length} settled bills (oldest first)</div>
+      ${sorted.map(b=>{ const st=stateOf(b); const bad=b.amount<=0;
+        return html`<div class="entry" key=${b.id} style=${st.voided?{opacity:.55}:null}>
+        <span class=${"dot "+(bad||st.drift!==0?"d":"c")}></span>
         <div class="grow">
           <div><b>${b.bill_no?("#"+b.bill_no):"(no number)"}</b> <span class="tiny muted">${b.name||""}</span></div>
-          <div class="tiny muted">${fmtDate(b.date)} · ${importedRefs.has(String(b.id))?"imported":"not imported"}</div>
+          <div class="tiny muted">${fmtDate(b.date)} · ${st.tag}${st.dupes>1?(" ×"+st.dupes):""}${st.drift!==0?(" · cashbook has "+money(st.posted)):""}${bad?" · total reads ₹0":""}</div>
         </div>
-        <div class="amt" style=${{color:b.amount<=0?'var(--debit)':'var(--ink)'}}>${money(b.amount)}</div>
-      </div>`)}
+        <div style=${{textAlign:"right"}}>
+          <div class="amt" style=${{color:bad?'var(--debit)':'var(--ink)'}}>${money(b.amount)}</div>
+          ${st.drift!==0 && st.dupes===1 && html`<button class="btn sec sm" style=${{marginTop:4}} disabled=${busyId!=null} onClick=${()=>sync(b)}>${busyId===b.id?"…":"Sync"}</button>`}
+          ${st.drift!==0 && st.dupes>1 && html`<div class="tiny" style=${{color:'var(--debit)',marginTop:4}}>imported ${st.dupes}×</div>`}
+        </div>
+      </div>`; })}
     </${Sheet}>`;
   }
 

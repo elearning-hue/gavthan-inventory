@@ -165,9 +165,12 @@ or derive qty from the sum of `mh_stock_moves`.
   **Feature loss:** nothing auto-posts a stock purchase into the cashbook
   anymore — purchases update stock only, the money side is manual. Can be
   re-added supplier-free if wanted.
-  Android app still has 8 files referencing it — full site list + drop SQL in
-  `drop-mh-parties.md`. GitHub code-search API reports 0 hits on that private
-  repo (not indexed) — clone and grep, don't trust the search API.
+  **Android side also done** — branch `claude/drop-mh-parties`,
+  PR https://github.com/elearning-hue/inventory_android_app/pull/6 (8 files,
+  not compiled — no Android SDK here, needs a build before merge).
+  Full site list + drop SQL in `drop-mh-parties.md`. GitHub code-search API
+  reports 0 hits on that private repo (not indexed) — clone and grep, don't
+  trust the search API.
 - **Ported two Android ledger changes** (source: android repo
   `inventory_android_app`, branch `claude/great-sanderson-23abf1`, file
   `web-changes-since-2.9.1.md`):

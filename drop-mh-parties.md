@@ -42,7 +42,17 @@ Dead styling, not a table dependency, harmless.
 
 ---
 
-## Android app (`inventory_android_app`) — TODO
+## Android app (`inventory_android_app`) — DONE
+
+Branch `claude/drop-mh-parties` off `claude/great-sanderson-23abf1`,
+PR: https://github.com/elearning-hue/inventory_android_app/pull/6
+
+All sites below removed, plus the imports they left dangling (`Columns`,
+`AppDropdown`, `Checkbox`, `CheckboxDefaults`, `Alignment`). Verified zero
+matches repo-wide. **Not compiled** — no Android SDK in that environment;
+run a build before merging.
+
+Original site list, kept for reference:
 
 Checked branch `claude/great-sanderson-23abf1`. **8 files** reference it.
 (Note: the GitHub code-search API returns 0 hits on this private repo — it
