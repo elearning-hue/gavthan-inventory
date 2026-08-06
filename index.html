@@ -1852,7 +1852,10 @@
     // `moves`) so a realtime refresh re-reads the same window instead of
     // silently throwing away the older pages the user already paged into.
     const [mvLimit,setMvLimit]=useState(MOVES_CHUNK);
+    const [sync,setSync]=useState(false);
+    const [syncCounts,setSyncCounts]=useState({pending:0,unmapped:0});
     const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
+    const isAdmin = !!(me && me.role==="admin");
 
     const load=useCallback(async()=>{
       // First load shows the spinner; realtime refreshes must not, or an open
@@ -1870,6 +1873,19 @@
       }catch(err){ toastErr(err.message||"Load failed"); }
       setLoading(false);
     },[mvLimit]);
+
+    // Bill-sync backlog counts for the Stock sync card. Kept separate from the
+    // main load so a missing migration only blanks this card, never the screen.
+    const loadSyncCounts=useCallback(async()=>{
+      try{
+        const [p,u]=await Promise.all([
+          sb.from("mh_stock_sync_pending").select("bill_id",{count:"exact",head:true}),
+          sb.from("mh_stock_sync_log").select("id",{count:"exact",head:true}).eq("status","unmapped")
+        ]);
+        setSyncCounts({pending:p.count||0, unmapped:u.count||0});
+      }catch(err){ /* migration not applied yet — leave counts at zero */ }
+    },[]);
+    useEffect(()=>{ if(isAdmin) loadSyncCounts(); },[isAdmin,loadSyncCounts]);
     useEffect(()=>{ load(); },[load]);
     // Live updates: stock items + stock moves pushed from the server refresh instantly.
     const live=useRealtime(["mh_inventory_items","mh_stock_moves"], load);
@@ -1938,6 +1954,17 @@
           </div>`)}
       </div>
 
+      ${isAdmin && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Stock sync</h3>
+        <button class="btn ghost sm" onClick=${()=>{setSync(true);}}>Open</button></div>
+        <div class="pad" style=${{paddingTop:0}}>
+          <div class="tiny muted">Bills settled in the billing app deduct stock automatically. Anything that couldn't be applied waits here.</div>
+          <div class="row" style=${{gap:8,marginTop:8}}>
+            <span class=${"pill"+(syncCounts.pending?" low":" ok")}>${syncCounts.pending} bill${syncCounts.pending===1?"":"s"} not synced</span>
+            <span class=${"pill"+(syncCounts.unmapped?" low":" ok")}>${syncCounts.unmapped} line${syncCounts.unmapped===1?"":"s"} unmapped</span>
+          </div>
+        </div>
+      </div>`}
+
       <div class="card"><div class="hd">
         <h3>Stock moves${moves.length>MOVES_PAGE_SIZE?(" · page "+(mvSafePage+1)+"/"+mvTotalPages):""}</h3>
         <button class="btn ghost sm" onClick=${()=>setHistory(true)}>View all</button></div>
@@ -1966,6 +1993,8 @@
         ${moves.length===0? html`<div class="empty">No movements</div>`
           : moves.map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
       </${Sheet}>`}
+    ${sync && html`<${StockSyncSheet} items=${items} me=${me}
+        onClose=${()=>setSync(false)} onChanged=${()=>{load();loadSyncCounts();}}/>`}
     `;
   }
 
@@ -2089,6 +2118,239 @@
   }
 
   /* ---------- generic bottom sheet ---------- */
+  /* ---- Admin: bill → stock sync (pending bills, item mapping, armed categories) ----
+     Every corrective action for the cross-app sync lives here so none of it
+     needs SQL. Deduction is only ever triggered by an explicit button: opening
+     this sheet reads, it never writes. ---- */
+  const SYNC_CATS=["starter","cold drinks","water bottle","cigarette"];
+  const normCat=(s)=> String(s||"").toLowerCase().trim().replace(/\s+/g," ");
+
+  function StockSyncSheet({items,me,onClose,onChanged}){
+    const [tab,setTab]=useState("pending");        // pending | mapping | cats
+    const [loading,setLoading]=useState(true);
+    const [busy,setBusy]=useState("");
+    const [pending,setPending]=useState([]);
+    const [unmapped,setUnmapped]=useState([]);
+    const [maps,setMaps]=useState([]);
+    const [cats,setCats]=useState([]);
+    const [draft,setDraft]=useState({});           // menu_name -> {item_id, ratio}
+    const [err,setErr]=useState("");
+
+    const load=useCallback(async()=>{
+      try{
+        const [p,u,m,c]=await Promise.all([
+          sb.from("mh_stock_sync_pending").select("*").order("bill_date",{ascending:false}).limit(200),
+          sb.from("mh_stock_sync_log").select("*").eq("status","unmapped").order("created_at",{ascending:false}),
+          sb.from("mh_item_map").select("*").order("menu_name"),
+          sb.from("mh_stock_categories").select("*")
+        ]);
+        if(p.error) throw p.error;
+        setPending(p.data||[]); setUnmapped(u.data||[]); setMaps(m.data||[]); setCats(c.data||[]);
+        setErr("");
+      }catch(e){
+        // Most likely cause by far: the stock-sync migration hasn't been run.
+        setErr(e.message||"Couldn't load sync data. Has the stock-sync migration been applied?");
+      }
+      setLoading(false);
+    },[]);
+    useEffect(()=>{ load(); },[load]);
+
+    // Apply one bill. The RPC is idempotent, so retrying is always safe.
+    async function applyBill(billId){
+      const { data, error } = await sb.rpc("mh_apply_bill_stock",{p_bill_id:billId});
+      if(error) throw new Error(error.message);
+      return (data && data[0]) || {applied:0,unmapped:0,skipped_reason:null};
+    }
+
+    async function syncOne(billId,label){
+      setBusy(billId);
+      try{
+        const r=await applyBill(billId);
+        if(r.skipped_reason) toastErr(`Bill ${label}: ${r.skipped_reason}`);
+        else if(r.applied) toast(`Bill ${label}: ${r.applied} item${r.applied===1?"":"s"} deducted${r.unmapped?`, ${r.unmapped} still unmapped`:""}`);
+        else toast(`Bill ${label}: nothing to deduct${r.unmapped?` — ${r.unmapped} unmapped`:""}`);
+        await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Sync failed"); }
+      setBusy("");
+    }
+
+    async function syncAll(){
+      if(!pending.length) return;
+      if(!confirm(`Apply stock deductions for ${pending.length} bill${pending.length===1?"":"s"}?`)) return;
+      setBusy("all");
+      let applied=0, unm=0, failed=0;
+      for(const b of pending){
+        try{ const r=await applyBill(b.bill_id); applied+=r.applied||0; unm+=r.unmapped||0; }
+        catch(e){ failed++; }
+      }
+      if(failed) toastErr(`${applied} deducted, ${failed} bill${failed===1?"":"s"} failed`);
+      else toast(`${applied} item${applied===1?"":"s"} deducted${unm?`, ${unm} unmapped`:""}`);
+      await load(); onChanged && onChanged();
+      setBusy("");
+    }
+
+    // Group unmapped log rows by menu name — one mapping fixes every bill that
+    // was waiting on that name, so the queue is per-name, not per-bill.
+    const gaps=useMemo(()=>{
+      const g={};
+      unmapped.forEach(r=>{
+        const k=r.menu_name||"(unnamed)";
+        if(!g[k]) g[k]={menu_name:k, qty:0, bills:new Set(), last:r.created_at};
+        g[k].qty+=num(r.bill_qty); g[k].bills.add(r.bill_id);
+        if(r.created_at>g[k].last) g[k].last=r.created_at;
+      });
+      return Object.values(g).sort((a,b)=> b.qty-a.qty);
+    },[unmapped]);
+
+    // Create the mapping, then immediately replay every bill it unblocks.
+    async function saveMapping(gap){
+      const d=draft[gap.menu_name]||{};
+      const itemId=d.item_id, ratio=num(d.ratio!=null&&d.ratio!==""?d.ratio:1);
+      if(!itemId){ toastErr("Pick an inventory item first"); return; }
+      if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
+      setBusy(gap.menu_name);
+      try{
+        const { error } = await sb.from("mh_item_map").insert({
+          menu_name:gap.menu_name, inventory_item_id:itemId,
+          qty_per_unit:ratio, created_by:(me&&me.email)||null });
+        if(error) throw new Error(error.message);
+        let applied=0;
+        for(const billId of gap.bills){
+          try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){}
+        }
+        toast(`Mapped "${gap.menu_name}" — ${applied} deduction${applied===1?"":"s"} applied to waiting bills`);
+        setDraft(o=>{ const n={...o}; delete n[gap.menu_name]; return n; });
+        await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Couldn't save mapping"); }
+      setBusy("");
+    }
+
+    async function removeMapping(m){
+      if(!confirm(`Remove mapping "${m.menu_name}"? Future bills will log it as unmapped until it's mapped again.`)) return;
+      setBusy(m.id);
+      try{
+        const { error } = await sb.from("mh_item_map").delete().eq("id",m.id);
+        if(error) throw new Error(error.message);
+        toast("Mapping removed"); await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Couldn't remove mapping"); }
+      setBusy("");
+    }
+
+    const armed=useMemo(()=> new Set(cats.map(c=>c.name_norm)),[cats]);
+    async function toggleCat(name){
+      const on=armed.has(name);
+      if(on && !confirm(`Stop deducting stock for "${name}"? Bills already deducted are unaffected.`)) return;
+      setBusy(name);
+      try{
+        const { error } = on
+          ? await sb.from("mh_stock_categories").delete().eq("name_norm",name)
+          : await sb.from("mh_stock_categories").insert({name_norm:name});
+        if(error) throw new Error(error.message);
+        toast(on?`"${name}" will no longer deduct`:`"${name}" now deducts stock`);
+        await load();
+      }catch(e){ toastErr(e.message||"Couldn't change category"); }
+      setBusy("");
+    }
+
+    const itemName=(id)=>{ const it=items.find(x=>x.id===id); return it?it.name:"(item)"; };
+
+    return html`<${Sheet} onClose=${onClose} title="Stock sync">
+      ${err && html`<div class="banner net">${err}</div>`}
+      ${loading ? html`<div class="empty"><span class="spin"></span><div style=${{marginTop:10}}>Loading…</div></div>` : html`
+      <div class="seg" style=${{marginTop:4}}>
+        <button class=${tab==="pending"?"on":""} onClick=${()=>setTab("pending")}>Not synced (${pending.length})</button>
+        <button class=${tab==="mapping"?"on":""} onClick=${()=>setTab("mapping")}>Mapping (${gaps.length})</button>
+        <button class=${tab==="cats"?"on":""} onClick=${()=>setTab("cats")}>Categories</button>
+      </div>
+
+      ${tab==="pending" && html`<div>
+        <p class="tiny muted" style=${{margin:"12px 2px"}}>
+          Settled bills whose stock was never applied — usually settled on an older app build, or the sync call didn't reach the server. Applying is safe to repeat; a bill already deducted won't deduct twice.
+        </p>
+        ${pending.length===0
+          ? html`<div class="empty"><${Icon} name="check"/>Every settled bill has been applied.</div>`
+          : html`
+            <button class="btn" style=${{width:"100%",marginBottom:10}} disabled=${busy==="all"}
+              onClick=${syncAll}>${busy==="all"?"Applying…":`Apply all ${pending.length}`}</button>
+            ${pending.map(b=> html`<div class="entry" key=${b.bill_id}>
+              <span class="dot d"></span>
+              <div class="grow">
+                <div><b>${b.bill_no?("#"+b.bill_no):"(no number)"}</b> <span class="tiny muted">${b.customer||""}</span></div>
+                <div class="tiny muted">${fmtDT(b.bill_date)}</div>
+              </div>
+              <button class="btn ghost sm" disabled=${!!busy}
+                onClick=${()=>syncOne(b.bill_id,b.bill_no||"")}>${busy===b.bill_id?"…":"Apply"}</button>
+            </div>`)}`}
+      </div>`}
+
+      ${tab==="mapping" && html`<div>
+        <p class="tiny muted" style=${{margin:"12px 2px"}}>
+          Menu items sold with nowhere to deduct from. These sold without being counted. Map one and every waiting bill is applied straight away.
+        </p>
+        ${gaps.length===0
+          ? html`<div class="empty"><${Icon} name="check"/>Nothing waiting to be mapped.</div>`
+          : gaps.map(g=> html`<div class="card" key=${g.menu_name} style=${{marginBottom:10}}>
+              <div class="pad">
+                <div class="row between" style=${{gap:8}}>
+                  <b class="ell">${g.menu_name}</b>
+                  <span class="pill low">${num(g.qty)} sold untracked</span>
+                </div>
+                <div class="tiny muted" style=${{marginTop:2}}>${g.bills.size} bill${g.bills.size===1?"":"s"} waiting · last ${fmtDT(g.last)}</div>
+                <div class="row" style=${{gap:8,marginTop:10,flexWrap:"wrap"}}>
+                  <select style=${{flex:"1 1 160px"}} value=${(draft[g.menu_name]||{}).item_id||""}
+                    onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),item_id:e.target.value}}))}>
+                    <option value="">Deduct from…</option>
+                    ${items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}${it.unit?" ("+it.unit+")":""}</option>`)}
+                  </select>
+                  <input type="number" min="0" step="any" style=${{width:92}} placeholder="ratio"
+                    value=${(draft[g.menu_name]||{}).ratio!=null?(draft[g.menu_name]||{}).ratio:"1"}
+                    onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),ratio:e.target.value}}))}/>
+                  <button class="btn sm" disabled=${busy===g.menu_name}
+                    onClick=${()=>saveMapping(g)}>${busy===g.menu_name?"Saving…":"Map & apply"}</button>
+                </div>
+                <div class="tiny muted" style=${{marginTop:6}}>Ratio = stock units consumed per menu item sold. A pack of 20 against stick-counted stock is 20.</div>
+              </div>
+            </div>`)}
+
+        <div class="card" style=${{marginTop:14}}><div class="hd"><h3>Existing mappings (${maps.length})</h3></div>
+          ${maps.length===0
+            ? html`<div class="empty">No mappings yet.</div>`
+            : maps.map(m=> html`<div class="entry" key=${m.id}>
+                <div class="grow">
+                  <div><b class="ell">${m.menu_name}</b></div>
+                  <div class="tiny muted">→ ${itemName(m.inventory_item_id)}${num(m.qty_per_unit)!==1?" × "+num(m.qty_per_unit):""}</div>
+                </div>
+                <button class="btn ghost sm" disabled=${busy===m.id}
+                  onClick=${()=>removeMapping(m)}><${Icon} name="x" size=${15}/></button>
+              </div>`)}
+        </div>
+      </div>`}
+
+      ${tab==="cats" && html`<div>
+        <p class="tiny muted" style=${{margin:"12px 2px"}}>
+          Only these categories deduct stock when a bill is settled. Turning one off takes effect on the next bill; it doesn't undo deductions already made.
+        </p>
+        ${SYNC_CATS.map(c=>{
+          const on=armed.has(c);
+          const mapped=maps.length;
+          return html`<div class="entry" key=${c}>
+            <span class=${"dot "+(on?"c":"")} style=${{background:on?"var(--credit)":"var(--muted)"}}></span>
+            <div class="grow">
+              <div><b style=${{textTransform:"capitalize"}}>${c}</b></div>
+              <div class="tiny muted">${on?"deducting stock":"not deducting"}</div>
+            </div>
+            <button class=${"btn sm "+(on?"ghost":"")} disabled=${busy===c}
+              onClick=${()=>toggleCat(c)}>${busy===c?"…":(on?"Turn off":"Turn on")}</button>
+          </div>`;
+        })}
+        <div class="tiny muted" style=${{margin:"12px 2px"}}>
+          Category names must match the billing app's menu categories exactly. A category with no mappings is harmless — its lines simply queue up under Mapping.
+        </div>
+      </div>`}
+      `}
+    </${Sheet}>`;
+  }
+
   function Sheet({title,onClose,children}){
     useEffect(()=>{ const k=(e)=>{ if(e.key==="Escape") onClose(); }; window.addEventListener("keydown",k); return ()=>window.removeEventListener("keydown",k); },[onClose]);
     return html`<div class="scrim" onClick=${onClose}>
