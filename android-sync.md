@@ -29,6 +29,63 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 
 ## Features
 
+- [TODO] **Flexible staff attribution — credit at payment time, not import.**
+  Biggest behavioural change; port carefully. Web commit `8098160`.
+
+  *Model.* Three fields on `mh_ledger`:
+  - `created_by` — import/creation attribution. **Now nullable.**
+  - `settled_by` — who actually collected the payment. Set at settle time.
+  - `imported_by` — who ran the import. Pure audit, never credits anyone.
+
+  Effective credit is `settled_by ?: created_by` (web helper `creditOf()`).
+  Use it everywhere staff is displayed or filtered — staff filter, list-row
+  subtitle, Net tile label, export. Do NOT read `created_by` directly for
+  crediting any more.
+
+  *Import.* Bulk and one-by-one both gain a "leave unassigned" option
+  alongside "each bill's original staff" and the per-staff choices. Picking
+  unassigned writes `created_by = null`. `imported_by` is stamped with the
+  current user on every import regardless of the choice.
+
+  *Payment.* Tapping the settle toggle from No → Yes must no longer settle
+  silently. It opens a "Payment received" sheet with a staff picker
+  (admin: any staff or leave unassigned; non-admin: locked to themselves —
+  same gate the entry sheet already uses). Confirming writes
+  `settled = true, settled_by = <chosen>`. Yes → No writes
+  `settled = false, settled_by = null` — the receipt no longer stands, so
+  the collector is cleared. No sheet needed for un-settling.
+
+  *Reassign.* Entry detail sheet gets a "Credited to" dropdown (admin only;
+  non-admin sees read-only text). Changing it writes `settled_by` alone —
+  never touches `settled` or `created_by`. Below it, show the import
+  attribution and collector as separate read-only lines.
+
+  *Audit surfaces.* Row subtitle shows the effective credit, or "unassigned"
+  when there is none, plus a small marker when `settled_by` differs from
+  `created_by` (web uses "⇄"). Staff filter gains an "Unassigned" bucket
+  matching rows with no effective credit. Export splits into four columns:
+  Credited to / Created by / Collected by / Imported by.
+
+  *Migration (shared DB — applies to both apps):*
+  ```sql
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS settled_by  TEXT;
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS imported_by TEXT;
+  ```
+  Until these exist the settle write fails. Reads should treat missing as
+  null so old rows keep crediting `created_by` exactly as before.
+
+  *Test vectors (verified on web):*
+  | scenario | created_by | settled_by | credited |
+  |---|---|---|---|
+  | import "original staff" | bill's staff | — | bill's staff |
+  | import "unassigned" | null | — | unassigned |
+  | unassigned, then collected by Raviraj | null | raviraj | raviraj |
+  | imported to Nilesh, collected by Raviraj | nilesh | raviraj | **raviraj** |
+  | that row, then un-settled | nilesh | null | nilesh |
+
+  Last two rows are the point of the feature — filtering by Raviraj must
+  show the handover row; filtering by Nilesh must not.
+
 - [DONE] Reversal pairs excluded from totals + Partial settlement — ported
   FROM android (`web-changes-since-2.9.1.md`), web now matches. No port back
   needed. Needs `mh_ledger.partially_settled` column in DB.
@@ -50,6 +107,23 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
   port the cookie approach. Android needs native i18n (strings.xml
   mr/en resource sets) instead. Flag for separate localization task.
 - [SKIP] Google Translate banner suppression CSS — web-only artifact.
+- [TODO] Stock moves paginated 10/page with clickable page numbers (same
+  pager as the ledger: Prev/Next, 5-button sliding window, page index
+  clamped when the list shrinks). Card previously showed a hard-coded 6
+  newest moves. Reaching the last page auto-fetches the next 300 by growing
+  the fetch limit — grow the LIMIT, don't append to the loaded list, or a
+  realtime refresh silently discards the older pages already paged into.
+- [TODO] Ledger reconciliation now resolves differences instead of just
+  reporting them. Per-bill drift (bill total vs what is actually posted) is
+  computed and a Sync action rewrites that bill's ledger row to the current
+  total. Sync is withheld when a bill has more than one ledger row
+  (duplicate import — needs manual cleanup). Reversed bill entries are
+  excluded from the imported total, and a "No longer on record" section
+  lists bill-sourced rows whose bill was deleted or un-settled.
+- [TODO] Removed `mh_parties` (supplier) dependencies — **already done on
+  android**, see PR #6 on `inventory_android_app` (branch
+  `claude/drop-mh-parties`). Not merged/compiled yet: needs a build before
+  merge. Details + drop SQL in `drop-mh-parties.md`.
 
 ## Bug fixes (P0, port to android if same data-layer bug exists)
 
@@ -72,6 +146,13 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 - [SKIP] Google Translate causing blank page on filter click (React
   removeChild/insertBefore DOM patch) — web-only, Translate not present
   on android.
+- [TODO] Reversed bill entries were still counted as imported sales, so
+  deleting a settled bill and reversing its ledger entry left "On record"
+  and "Imported" permanently apart by that amount (the reported ₹600 case:
+  bill #95 deleted + reversed). Fixed by excluding rows with
+  `reversed = true` from the imported-sales total, the per-bill posted
+  amount and the per-bill row count. Check the android reconciliation for
+  the same bug.
 
 ## Accessibility (port if android app shares web component patterns)
 
@@ -82,6 +163,19 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 
 ## Server-side (applies to BOTH apps — shared Supabase backend)
 
+- [TODO] **Pending column migrations.** None of these are applied yet. Both
+  clients degrade rather than crash if a column is missing (treat null as
+  false / absent), except `settled_by`, whose absence makes the settle write
+  fail outright.
+  ```sql
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS reversed          BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS partially_settled BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS settled_by        TEXT;
+  ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS imported_by       TEXT;
+  ```
+- [TODO] `supabase-stock-sync.sql` (repo root) — R1 cross-app stock sync
+  schema + RPCs, drafted, NOT applied. Verify `mh_categories` column names
+  and the `mh_customers.items` JSON keys before running.
 - [TODO] `supabase-rls.sql` (repo root) — Row Level Security policies
   drafted for finding: client-side-only authorization (any user can
   forge `created_by`, run admin actions via API directly, deactivated
