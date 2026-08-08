@@ -136,6 +136,13 @@ or derive qty from the sum of `mh_stock_moves`.
 | A-P2-x | Medium | `num()` turns "1,000" into 0; `parseDate` rolls over invalid dates; Excel "user" column regex matches customer Name; negative stock allowed; settle double-tap race; float equality in reconcile; silent realtime disconnect; blank date -> raw Postgres error; huge amounts overflow columns. |
 
 ### DB migrations pending
+- [ ] `mh_ledger.settled_by text` and `mh_ledger.imported_by text` —
+      **required** by flexible staff attribution. Without them the settle
+      write fails / the credited staff never persists.
+      ```sql
+      ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS settled_by  TEXT;
+      ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS imported_by TEXT;
+      ```
 - [ ] `mh_ledger.reversed boolean default false` — **required** by the
       shipped Reversal Entry feature. If missing, the reverse action's flag
       update silently no-ops and an entry can be reversed twice.
@@ -156,6 +163,25 @@ or derive qty from the sum of `mh_stock_moves`.
 ---
 
 ## ACTIONS TAKEN (newest first)
+
+### 2026-07-09
+- **Flexible staff attribution.** Credit is no longer locked at import.
+  `created_by` keeps the import-time attribution (now nullable — "leave
+  unassigned" is an option in both bulk and one-by-one import), new
+  `settled_by` records who actually collected the payment and is captured at
+  settle time, and new `imported_by` always stamps whoever ran the import as
+  pure audit metadata. Effective credit is `settled_by || created_by` via a
+  `creditOf()` helper, used by the staff filter, row subtitles and export.
+  Tapping "No" now opens a Payment-received sheet with a staff picker instead
+  of silently toggling; admins can pick anyone, staff credit themselves;
+  un-settling clears `settled_by`. Admins can also reassign from the entry
+  detail sheet at any time. Staff filter gained an "Unassigned" option, and
+  export now carries Credited to / Created by / Collected by / Imported by as
+  separate columns.
+  Verified: unassigned import writes `created_by:null` while still recording
+  the importer; settling credits the collector; un-settling clears it; a bill
+  imported to one staffer but collected by another files under the collector,
+  not the importer.
 
 ### 2026-07-08
 - **Stock moves paginated 10/page** with the ledger's exact pager (clickable

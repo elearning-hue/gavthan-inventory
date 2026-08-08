@@ -1138,11 +1138,16 @@
 
     const months=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,7)).filter(Boolean)); s.add(localISO(new Date()).slice(0,7)); return Array.from(s).sort().reverse(); },[entries]);
     const years=useMemo(()=>{ const s=new Set(entries.map(e=>dateOf(e).slice(0,4)).filter(Boolean)); s.add(String(new Date().getFullYear())); return Array.from(s).sort().reverse(); },[entries]);
-    // staff dropdown = active users + any creator key present in entries not already listed
+    // Who gets credited for an entry. `created_by` records who imported/created
+    // it (kept untouched as the audit trail); `settled_by` records who actually
+    // collected the payment and is set at settle time. The later one wins, so a
+    // bill imported by one staffer and collected by another credits the collector.
+    const creditOf=(e)=> (e && (e.settled_by || e.created_by)) || "";
+    // staff dropdown = active users + any credited key present in entries not already listed
     const staffOpts=useMemo(()=>{
       const opts=users.map(u=>({ value:u.email, label:initCap(u.display_name||u.email.split("@")[0]) }));
       const known=new Set(opts.map(o=>o.value));
-      entries.forEach(e=>{ if(e.created_by && !known.has(e.created_by)){ known.add(e.created_by); opts.push({ value:e.created_by, label:dispName(e.created_by,userMap) }); } });
+      entries.forEach(e=>{ [e.created_by,e.settled_by].forEach(k=>{ if(k && !known.has(k)){ known.add(k); opts.push({ value:k, label:dispName(k,userMap) }); } }); });
       return opts.sort((a,b)=>a.label.localeCompare(b.label));
     },[users,entries,userMap]);
 
@@ -1153,7 +1158,7 @@
       if(mode==="dates"){ if(dFrom && d<dFrom) return false; if(dTo && d>dTo) return false; return true; }
       return true;
     };
-    const matchStaff=(e)=> staff==="all" || e.created_by===staff;
+    const matchStaff=(e)=> staff==="all" || creditOf(e)===staff || (staff==="__none" && !creditOf(e));
     const matchCat=(e)=> catF==="all" || (e.category||"")===catF;
     const matchText=(e)=> !q.trim() || (String(e.note||"")+" "+String(e.category||"")).toLowerCase().indexOf(q.trim().toLowerCase())>=0;
 
@@ -1206,19 +1211,23 @@
     // ----- detailed export (.xlsx; respects current filters) -----
     function exportData(){
       if(!shown.length){ toast("Nothing to export"); return; }
-      const header=["Date","Type","Category","Description","Amount","Mode","Staff","Source","Recorded at","Ref"];
+      const header=["Date","Type","Category","Description","Amount","Mode","Credited to","Created by","Collected by","Imported by","Source","Recorded at","Ref"];
       const aoa=[header]; let inc=0,exp=0;
       shown.forEach(e=>{
         const k=kindOf(e); if(k==="income") inc+=num(e.amount); else exp+=num(e.amount);
         aoa.push([ dateOf(e), k, e.category||"", e.note||"", num(e.amount), e.mode||"",
-          dispName(e.created_by,userMap), e.source||"",
+          creditOf(e)?dispName(creditOf(e),userMap):"unassigned",
+          e.created_by?dispName(e.created_by,userMap):"",
+          e.settled_by?dispName(e.settled_by,userMap):"",
+          e.imported_by?dispName(e.imported_by,userMap):"",
+          e.source||"",
           e.created_at?new Date(e.created_at).toLocaleString("en-IN"):"", e.ref||"" ]);
       });
       aoa.push([]); aoa.push(["Income","","","",inc]); aoa.push(["Expense","","","",exp]); aoa.push(["Net","","","",inc-exp]);
       const tag = mode==="all"?"all": mode==="month"?month: mode==="year"?year: ((dFrom||"start")+"_"+(dTo||"now"));
       if(typeof XLSX!=="undefined"){
         const ws=XLSX.utils.aoa_to_sheet(aoa);
-        ws["!cols"]=[{wch:12},{wch:9},{wch:16},{wch:32},{wch:11},{wch:8},{wch:16},{wch:9},{wch:20},{wch:10}];
+        ws["!cols"]=[{wch:12},{wch:9},{wch:16},{wch:32},{wch:11},{wch:8},{wch:16},{wch:16},{wch:16},{wch:16},{wch:9},{wch:20},{wch:10}];
         const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Ledger");
         XLSX.writeFile(wb,"gavthan-ledger-"+tag+".xlsx");
         toast("Exported "+shown.length+" entries");
@@ -1270,14 +1279,20 @@
     const pending=useMemo(()=> billRows.filter(b=> !importedRefs.has(String(b.id))),[billRows,importedRefs]);
     const zeroBills=useMemo(()=> billRows.filter(b=> b.amount<=0).length,[billRows]);
 
+    // assignTo: null = fall back to the bill's own staff, "" = deliberately
+    // unassigned (credited later, when the payment is received), else an email.
     async function importSales(assignTo,subset){
       const list = (subset && subset.length) ? subset : pending;
       if(!list.length){ toast("No new bills to import"); return; }
+      const unassigned = assignTo==="";
       const rows=list.map(b=>({
         entry_type:"income", amount:b.amount, category:"Sales", mode:"bill",
         ref:String(b.id), note:"Bill "+(b.bill_no?("#"+b.bill_no):"(no number)"),
         entry_date:b.date||todayISO(), source:"bill",
-        created_by: assignTo || b.added_by || meEmail }));   // override, else bill's original staff
+        // who the sale is credited to at import time (may be nobody)
+        created_by: unassigned ? null : (assignTo || b.added_by || meEmail),
+        // who actually ran the import — audit metadata, never used for crediting
+        imported_by: meEmail }));
       const { error } = await sb.from("mh_ledger").insert(rows);
       if(error) throw error;
       toast("Imported "+rows.length+" sale"+(rows.length>1?"s":""));
@@ -1285,10 +1300,43 @@
       return rows.length;
     }
 
-    async function setSettle(id,val){
-      setEntries(prev=> prev.map(x=> x.id===id?{...x,settled:val}:x));   // optimistic
-      const { error } = await sb.from("mh_ledger").update({ settled:val }).eq("id",id);
-      if(error){ toastErr(error.message||"Couldn't update"); setEntries(prev=> prev.map(x=> x.id===id?{...x,settled:!val}:x)); }
+    // Settling IS the payment-receipt moment, so that is where the credited staff
+    // is captured. `who` lands in settled_by; created_by (the import record) is
+    // never overwritten. Un-settling clears settled_by — the payment didn't stand.
+    async function setSettle(id,val,who){
+      const patch = val ? { settled:true, settled_by: who || null } : { settled:false, settled_by:null };
+      const prevRow = entries.find(x=>x.id===id);
+      setEntries(prev=> prev.map(x=> x.id===id?{...x,...patch}:x));   // optimistic
+      const { error } = await sb.from("mh_ledger").update(patch).eq("id",id);
+      if(error){
+        toastErr(error.message||"Couldn't update");
+        setEntries(prev=> prev.map(x=> x.id===id?(prevRow||{...x,settled:!val}):x));
+      }
+    }
+
+    // Re-point an already-settled entry at a different collector, without
+    // touching its settled state or its import attribution.
+    async function reassignCredit(id,who){
+      const prevRow = entries.find(x=>x.id===id);
+      setEntries(prev=> prev.map(x=> x.id===id?{...x,settled_by:who||null}:x));
+      const { error } = await sb.from("mh_ledger").update({ settled_by: who||null }).eq("id",id);
+      if(error){ toastErr(error.message||"Couldn't reassign"); setEntries(prev=> prev.map(x=> x.id===id?(prevRow||x):x)); return; }
+      toast(who?("Credited to "+dispName(who,userMap)):"Credit cleared");
+    }
+
+    // Tapping "No" opens this so the collector can be named as the money lands.
+    const [settleFor,setSettleFor]=useState(null);
+    const [settleWho,setSettleWho]=useState("");
+    const [settleBusy,setSettleBusy]=useState(false);
+    function openSettle(e){
+      setSettleFor(e);
+      setSettleWho(isAdmin ? (creditOf(e)||meEmail) : meEmail);
+    }
+    async function confirmSettle(){
+      if(!settleFor) return;
+      setSettleBusy(true);
+      await setSettle(settleFor.id, true, settleWho||null);
+      setSettleBusy(false); setSettleFor(null);
     }
 
     const [detail,setDetail]=useState(null);   // ledger row tapped -> view/reverse sheet
@@ -1377,6 +1425,7 @@
         <label>Staff</label>
         <select value=${staff} onChange=${e=>setStaff(e.target.value)}>
           <option value="all">All staff</option>
+          <option value="__none">Unassigned</option>
           ${staffOpts.map(o=> html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
         </select>
         <label>Category</label>
@@ -1395,7 +1444,7 @@
           ${pendingExpense>0 && html`<div class="pend">+${money(pendingExpense)} pending</div>`}</div>
       </div>
       <div class="stat" style=${{marginTop:10}}>
-        <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+dispName(staff,userMap)):""}${catF!=="all"?(" · "+catF):""}</div>
+        <div class="k">Net · ${periodLabel}${staff!=="all"?(" · "+(staff==="__none"?"unassigned":dispName(staff,userMap))):""}${catF!=="all"?(" · "+catF):""}</div>
         <div class="v" style=${{color: net>=0?'var(--credit)':'var(--debit)'}}>${money(net)}</div>
         ${unsettledCount>0 && html`<div class="pend">Settled only · ${unsettledCount} unsettled entr${unsettledCount===1?"y":"ies"} excluded</div>`}
       </div>
@@ -1449,13 +1498,13 @@
                 <span class="lt-date">${dmy}</span>
                 <span class="lt-desc">
                   <b class="ell">${e.note|| (isInc?"Income":"Expense")}</b>
-                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${dispName(e.created_by,userMap)||"—"}${e.source==="bill"?" · auto":""}${e.reversed?" · reversed":""}${isReversal(e)?" · reversal":""}${isPartialRow(e)?(isInc?" · outstanding":" · balancing · locked"):""}${e.partially_settled?" · part paid":""}</div>
+                  <div class="sub ell">${(CAT_EMOJI[e.category]||"")+" "+(e.category||"—")} · ${creditOf(e)?dispName(creditOf(e),userMap):"unassigned"}${e.settled_by&&e.created_by&&e.settled_by!==e.created_by?" ⇄":""}${e.source==="bill"?" · auto":""}${e.reversed?" · reversed":""}${isReversal(e)?" · reversal":""}${isPartialRow(e)?(isInc?" · outstanding":" · balancing · locked"):""}${e.partially_settled?" · part paid":""}</div>
                 </span>
                 <span class="lt-amt lt-dr">${isInc?numFmt(e.amount):""}</span>
                 <span class="lt-amt lt-cr">${isInc?"":numFmt(e.amount)}</span>
                 <span class="lt-setcell"><button class=${"setbtn "+(e.settled===false?"no":"yes")} disabled=${isBalancing}
-                  title=${isBalancing?"Generated balancing entry — locked":"Toggle settle"}
-                  onClick=${(ev)=>{ev.stopPropagation(); if(!isBalancing) setSettle(e.id, e.settled===false);}}>${e.settled===false?"No":"Yes"}</button></span>
+                  title=${isBalancing?"Generated balancing entry — locked":(e.settled===false?"Record payment received":"Mark unpaid")}
+                  onClick=${(ev)=>{ev.stopPropagation(); if(isBalancing) return; if(e.settled===false) openSettle(e); else setSettle(e.id,false);}}>${e.settled===false?"No":"Yes"}</button></span>
               </div>`; })}
           </div>`}
         ${shown.length>PAGE_SIZE && html`<div class="pager">
@@ -1475,7 +1524,18 @@
     ${detail && html`<${Sheet} onClose=${()=>setDetail(null)} title="Entry detail">
         <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
           <b>${detail.note||detail.category||"Entry"}</b><br/>
-          <span class="tiny muted">${(CAT_EMOJI[detail.category]||"")+" "+(detail.category||"—")} · ${dispName(detail.created_by,userMap)||"—"} · ${dateOf(detail)}</span>
+          <span class="tiny muted">${(CAT_EMOJI[detail.category]||"")+" "+(detail.category||"—")} · ${dateOf(detail)}</span>
+        </div>
+        <label>Credited to${detail.settled===false?" (set when payment is received)":""}</label>
+        ${isAdmin
+          ? html`<select value=${creditOf(detail)||""} onChange=${ev=>{ const v=ev.target.value; setDetail(d=>({...d,settled_by:v||null})); reassignCredit(detail.id, v||null); }}>
+              <option value="">— unassigned —</option>
+              ${staffOpts.map(o=> html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
+            </select>`
+          : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)',fontWeight:500}}>
+              ${creditOf(detail)?dispName(creditOf(detail),userMap):"Unassigned"} <span class="tiny">(only an admin can reassign)</span></div>`}
+        <div class="tiny muted" style=${{margin:"6px 2px 0"}}>
+          Imported / created by <b style=${{color:'var(--ink)'}}>${detail.created_by?dispName(detail.created_by,userMap):"—"}</b>${detail.settled_by?(" · payment collected by "+dispName(detail.settled_by,userMap)):""}
         </div>
         <div class="stats" style=${{marginTop:12}}>
           <div class=${"stat "+(kindOf(detail)==="income"?"green":"red")}>
@@ -1500,6 +1560,24 @@
               <button class="btn danger" disabled=${reversing} onClick=${()=>{ if(confirm("Reverse this entry? This posts an opposing "+money(detail.amount)+" entry and cannot be undone.")) reverseEntry(detail); }}>${reversing?"Reversing…":"Reversal entry"}</button>
             </div>`}
     </${Sheet}>`}
+    ${settleFor && html`<${Sheet} onClose=${()=>setSettleFor(null)} title="Payment received">
+        <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
+          <b>${settleFor.note||settleFor.category||"Entry"}</b><br/>
+          <span class="tiny muted">${money(settleFor.amount)} · ${dateOf(settleFor)}${settleFor.created_by?(" · imported by "+dispName(settleFor.created_by,userMap)):""}</span>
+        </div>
+        <label>Credited to</label>
+        ${isAdmin
+          ? html`<select value=${settleWho} onChange=${ev=>setSettleWho(ev.target.value)}>
+              <option value="">— leave unassigned —</option>
+              ${staffOpts.map(o=> html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
+            </select>`
+          : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)',fontWeight:500}}>
+              ${dispName(meEmail,userMap)} <span class="tiny">(an admin can credit someone else)</span></div>`}
+        <p class="tiny muted" style=${{margin:"8px 2px 0"}}>Whoever actually collected this money. The import record stays as it is — this only sets who is credited for the receipt.</p>
+        <div class="sheet-foot">
+          <button class="btn" disabled=${settleBusy} onClick=${confirmSettle}>${settleBusy?"Saving…":"Mark received"}</button>
+        </div>
+      </${Sheet}>`}
     ${partial && html`<${Sheet} onClose=${()=>{setPartial(null);setPartialAmt("");}} title="Partial payment">
         <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
           <b>${partial.note||partial.category||"Entry"}</b><br/>
@@ -1589,17 +1667,18 @@
     const [perAssign,setPerAssign]=useState({});     // bill.id -> "original" | <email>
     const [busy,setBusy]=useState(false);
     const [busyId,setBusyId]=useState(null);
+    // "original" -> null (fall back to the bill's own staff), "none" -> "" (an
+    // explicit unassigned import; the collector is credited at payment time).
+    const pick=(v)=> v==="original" ? null : v==="none" ? "" : v;
     async function go(){
       setBusy(true);
-      try{ await onConfirm(assign==="original"?null:assign); onDone&&onDone(); }
+      try{ await onConfirm(pick(assign)); onDone&&onDone(); }
       catch(e){ toastErr(e.message||"Import failed"); setBusy(false); }
     }
     async function goOne(b){
       setBusyId(b.id);
-      try{
-        const who=perAssign[b.id];
-        await onConfirm(who && who!=="original" ? who : null, [b]);
-      }catch(e){ toastErr(e.message||"Import failed"); }
+      try{ await onConfirm(pick(perAssign[b.id]||"original"), [b]); }
+      catch(e){ toastErr(e.message||"Import failed"); }
       setBusyId(null);
     }
     return html`<${Sheet} onClose=${onClose} title="Import sales from bills">
@@ -1618,12 +1697,15 @@
         ? html`<div>
             <select value=${assign} onChange=${e=>setAssign(e.target.value)}>
               <option value="original">Each bill's original staff</option>
+              <option value="none">Leave unassigned \u2014 decide when paid</option>
               ${users.map(u=> html`<option key=${u.email} value=${u.email}>${initCap(u.display_name||u.email.split("@")[0])}${u.email===meEmail?" (you)":""}</option>`)}
             </select>
-            <p class="tiny muted" style=${{marginTop:6}}>Default keeps each bill credited to whoever raised it. Choose a staff member to reassign all ${count} imported sales to that person instead.</p>
+            <p class="tiny muted" style=${{marginTop:6}}>${assign==="none"
+              ? "Imported with no one credited. Whoever collects the payment gets credited when the entry is marked received."
+              : "Attribution isn't final \u2014 whoever collects the payment can be credited at that point instead."}</p>
           </div>`
         : html`<div class="banner" style=${{background:'var(--surface-2)',color:'var(--muted)',borderColor:'var(--line-strong)',fontWeight:500}}>
-            Credited to each bill's original staff. ${'\u00A0'}<span class="tiny">(Reassigning requires an admin.)</span></div>`}
+            Credited to each bill's original staff. ${'\u00A0'}<span class="tiny">(Can be re-credited when the payment is received.)</span></div>`}
       <div class="sheet-foot">
         <button class="btn" disabled=${busy||count===0} onClick=${go}>${busy?html`<span class="spin"></span> Importing…`:("Import "+count+" sale"+(count===1?"":"s"))}</button>
       </div>
@@ -1638,6 +1720,7 @@
                     <div class="tiny muted">${fmtDate(b.date)} · ${money(b.amount)}</div>
                     ${isAdmin && html`<select style=${{marginTop:6}} value=${perAssign[b.id]||"original"} onChange=${e=>setPerAssign(p=>({...p,[b.id]:e.target.value}))}>
                         <option value="original">Original staff${b.added_by?(" ("+dispName(b.added_by,userMap)+")"):""}</option>
+                        <option value="none">Unassigned — decide when paid</option>
                         ${users.map(u=> html`<option key=${u.email} value=${u.email}>${initCap(u.display_name||u.email.split("@")[0])}${u.email===meEmail?" (you)":""}</option>`)}
                       </select>`}
                   </div>
