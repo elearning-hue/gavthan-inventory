@@ -2005,6 +2005,37 @@
     // grows, so this page is no longer the last and the effect stops firing.
     useEffect(()=>{ if(mvFetchingOlder) setMvLimit(l=> l+MOVES_CHUNK); },[mvFetchingOlder]);
 
+    // ----- stock-move export (.xlsx, CSV fallback; exports everything loaded) -----
+    function exportMoves(){
+      if(!moves.length){ toast("Nothing to export"); return; }
+      const label={ in:"Purchase / in", out:"Used / out", waste:"Wastage", adjust:"Adjustment" };
+      const header=["Date","Item","Category","Movement","Qty","Unit","Unit cost","Value","Note","By","Recorded at"];
+      const aoa=[header];
+      moves.forEach(mv=>{
+        const it=items.find(x=>x.id===mv.item_id);
+        const qty=num(mv.qty), cost=num(mv.unit_cost);
+        aoa.push([ String(mv.move_date||mv.created_at||"").slice(0,10), it?it.name:"(item)", (it&&it.category)||"",
+          label[mv.move_type]||mv.move_type||"", qty, (it&&it.unit)||"",
+          cost||"", cost?Math.round(qty*cost*100)/100:"", mv.note||"", mv.created_by||"",
+          mv.created_at?new Date(mv.created_at).toLocaleString("en-IN"):"" ]);
+      });
+      const tag=localISO(new Date());
+      if(typeof XLSX!=="undefined"){
+        const ws=XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"]=[{wch:12},{wch:24},{wch:14},{wch:15},{wch:9},{wch:7},{wch:10},{wch:11},{wch:28},{wch:22},{wch:20}];
+        const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Stock moves");
+        XLSX.writeFile(wb,"gavthan-stock-moves-"+tag+".xlsx");
+        toast("Exported "+moves.length+" movement"+(moves.length===1?"":"s"));
+      } else {
+        const esc=(v)=>{ const s=v==null?"":String(v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+        const blob=new Blob(["﻿"+aoa.map(r=>r.map(esc).join(",")).join("\n")],{type:"text/csv;charset=utf-8;"});
+        const url=URL.createObjectURL(blob); const a=document.createElement("a");
+        a.href=url; a.download="gavthan-stock-moves-"+tag+".csv"; document.body.appendChild(a); a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },120);
+        toast("Excel library unavailable — exported CSV");
+      }
+    }
+
     if(loading) return html`<div class="wrap"><div class="empty"><span class="spin" style=${{borderColor:'var(--line-strong)',borderTopColor:'var(--accent)'}}></span><div style=${{marginTop:10}}>Loading stock…</div></div></div>`;
 
     return html`<div class="wrap">
@@ -2050,7 +2081,10 @@
 
       <div class="card"><div class="hd">
         <h3>Stock moves${moves.length>MOVES_PAGE_SIZE?(" · page "+(mvSafePage+1)+"/"+mvTotalPages):""}</h3>
-        <button class="btn ghost sm" onClick=${()=>setHistory(true)}>View all</button></div>
+        <div class="row" style=${{gap:6}}>
+          ${moves.length>0 && html`<button class="btn ghost sm" onClick=${exportMoves} title="Download as Excel (.xlsx)"><${Icon} name="download" size=${16}/>Export</button>`}
+          <button class="btn ghost sm" onClick=${()=>setHistory(true)}>View all</button>
+        </div></div>
         ${mvPageItems.map(mv=> html`<${MoveRow} key=${mv.id} mv=${mv} items=${items}/>`)}
         ${moves.length===0 && html`<div class="empty"><${Icon} name="folder"/>No movements recorded</div>`}
         ${moves.length>MOVES_PAGE_SIZE && html`<div class="pager">
@@ -2205,7 +2239,11 @@
      Every corrective action for the cross-app sync lives here so none of it
      needs SQL. Deduction is only ever triggered by an explicit button: opening
      this sheet reads, it never writes. ---- */
-  const SYNC_CATS=["starter","cold drinks","water bottle","cigarette"];
+  // Fallback only — used when mh_categories can't be read (missing table / RLS).
+  // The real list is fetched from mh_categories; nothing here is authoritative.
+  const SYNC_CATS_FALLBACK=["starter","cold drinks","water bottle","cigarette"];
+  // Must match the DB's mh_norm(): lowercase, trim, collapse inner whitespace.
+  const normName=(s)=> String(s==null?"":s).toLowerCase().trim().replace(/\s+/g," ");
   const normCat=(s)=> String(s||"").toLowerCase().trim().replace(/\s+/g," ");
 
   function StockSyncSheet({items,me,onClose,onChanged}){
@@ -2216,7 +2254,10 @@
     const [unmapped,setUnmapped]=useState([]);
     const [maps,setMaps]=useState([]);
     const [cats,setCats]=useState([]);
+    const [allCats,setAllCats]=useState([]);       // every category from mh_categories
+    const [menuRows,setMenuRows]=useState([]);     // {name, category} seen on settled bills
     const [draft,setDraft]=useState({});           // menu_name -> {item_id, ratio}
+    const [manual,setManual]=useState({menu:"",item_id:"",ratio:"1"});
     const [err,setErr]=useState("");
 
     const load=useCallback(async()=>{
@@ -2230,6 +2271,30 @@
         if(p.error) throw p.error;
         setPending(p.data||[]); setUnmapped(u.data||[]); setMaps(m.data||[]); setCats(c.data||[]);
         setErr("");
+
+        // Category list comes from the billing app's own table — never hardcoded.
+        // Soft-fail: if it can't be read the tab falls back to the legacy list
+        // rather than showing nothing.
+        const cc=await sb.from("mh_categories").select("*").order("name");
+        if(!cc.error && cc.data) setAllCats(cc.data);
+
+        // Menu item names for the manual pairing picker. There is no menu table
+        // in this app's schema — the only place menu names exist is the items
+        // JSON on settled bills, so distinct names are derived from there.
+        const bb=await sb.from("mh_customers").select("items,status").eq("status","settled").limit(400);
+        if(!bb.error && bb.data){
+          const seen={};
+          bb.data.forEach(b=>{
+            let its=b.items;
+            if(typeof its==="string"){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
+            (Array.isArray(its)?its:[]).forEach(li=>{
+              const nm=String((li&&li.name)||"").trim(); if(!nm) return;
+              const k=normName(nm);
+              if(!seen[k]) seen[k]={ name:nm, category:String((li&&li.category)||"").trim() };
+            });
+          });
+          setMenuRows(Object.values(seen).sort((a,b)=>a.name.localeCompare(b.name)));
+        }
       }catch(e){
         // Most likely cause by far: the stock-sync migration hasn't been run.
         setErr(e.message||"Couldn't load sync data. Has the stock-sync migration been applied?");
@@ -2308,6 +2373,36 @@
       setBusy("");
     }
 
+    // Menu names seen on bills that don't already have a mapping — the picker
+    // shouldn't offer something already paired.
+    const unmappedMenuNames=useMemo(()=>{
+      const have=new Set(maps.map(m=> normName(m.menu_name)));
+      return menuRows.filter(r=> !have.has(normName(r.name)));
+    },[menuRows,maps]);
+
+    // Proactive pairing: same insert as the queue flow, then replay anything
+    // already waiting on that name so a back-dated mapping still applies.
+    async function saveManualMapping(){
+      const name=manual.menu.trim(), ratio=num(manual.ratio!==""?manual.ratio:1);
+      if(!name || !manual.item_id) return;
+      if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
+      if(maps.some(m=> normName(m.menu_name)===normName(name))){ toastErr("That menu item is already mapped"); return; }
+      setBusy("manual");
+      try{
+        const { error } = await sb.from("mh_item_map").insert({
+          menu_name:name, inventory_item_id:manual.item_id,
+          qty_per_unit:ratio, created_by:(me&&me.email)||null });
+        if(error) throw new Error(error.message);
+        const waiting=(gaps.find(g=> normName(g.menu_name)===normName(name))||{}).bills;
+        let applied=0;
+        if(waiting) for(const billId of waiting){ try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){} }
+        toast(`Mapped "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
+        setManual({menu:"",item_id:"",ratio:"1"});
+        await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Couldn't save mapping"); }
+      setBusy("");
+    }
+
     async function removeMapping(m){
       if(!confirm(`Remove mapping "${m.menu_name}"? Future bills will log it as unmapped until it's mapped again.`)) return;
       setBusy(m.id);
@@ -2320,6 +2415,18 @@
     }
 
     const armed=useMemo(()=> new Set(cats.map(c=>c.name_norm)),[cats]);
+    // Categories to show = everything in mh_categories, plus any already armed
+    // whose name no longer appears there (renamed/deleted upstream) so it stays
+    // visible and can be turned off. Falls back to the legacy list if the table
+    // couldn't be read at all.
+    const catList=useMemo(()=>{
+      const out=[], seen=new Set();
+      const push=(label,orphan)=>{ const norm=normName(label); if(!norm||seen.has(norm)) return; seen.add(norm); out.push({norm,label,orphan:!!orphan}); };
+      if(allCats.length) allCats.forEach(c=> push(c.name!=null?c.name:c.category_name));
+      else SYNC_CATS_FALLBACK.forEach(c=> push(c));
+      cats.forEach(c=> push(c.name_norm, true));
+      return out.sort((a,b)=> a.label.localeCompare(b.label));
+    },[allCats,cats]);
     async function toggleCat(name){
       const on=armed.has(name);
       if(on && !confirm(`Stop deducting stock for "${name}"? Bills already deducted are unaffected.`)) return;
@@ -2395,6 +2502,29 @@
               </div>
             </div>`)}
 
+        <div class="card" style=${{marginTop:14}}><div class="hd"><h3>Add a mapping</h3></div>
+          <div class="pad">
+            <p class="tiny muted" style=${{margin:"0 0 10px"}}>Pair a menu item up front, before it is ever sold unmapped. Names come from items seen on settled bills; type one in if it hasn't sold yet.</p>
+            <label>Menu item</label>
+            <input list="gh-menu-names" value=${manual.menu} placeholder="e.g. Aquafina 1L"
+              onChange=${e=>setManual(o=>({...o,menu:e.target.value}))}/>
+            <datalist id="gh-menu-names">
+              ${unmappedMenuNames.map(m=> html`<option key=${m.name} value=${m.name}>${m.category||""}</option>`)}
+            </datalist>
+            <label>Deduct from</label>
+            <select value=${manual.item_id} onChange=${e=>setManual(o=>({...o,item_id:e.target.value}))}>
+              <option value="">Pick an inventory item…</option>
+              ${items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}${it.unit?" ("+it.unit+")":""}</option>`)}
+            </select>
+            <label>Stock units per item sold</label>
+            <input type="number" min="0" step="any" value=${manual.ratio}
+              onChange=${e=>setManual(o=>({...o,ratio:e.target.value}))}/>
+            <div style=${{height:12}}></div>
+            <button class="btn" disabled=${busy==="manual"||!manual.menu.trim()||!manual.item_id}
+              onClick=${saveManualMapping}>${busy==="manual"?"Saving…":"Add mapping"}</button>
+          </div>
+        </div>
+
         <div class="card" style=${{marginTop:14}}><div class="hd"><h3>Existing mappings (${maps.length})</h3></div>
           ${maps.length===0
             ? html`<div class="empty">No mappings yet.</div>`
@@ -2413,21 +2543,25 @@
         <p class="tiny muted" style=${{margin:"12px 2px"}}>
           Only these categories deduct stock when a bill is settled. Turning one off takes effect on the next bill; it doesn't undo deductions already made.
         </p>
-        ${SYNC_CATS.map(c=>{
-          const on=armed.has(c);
-          const mapped=maps.length;
-          return html`<div class="entry" key=${c}>
+        ${catList.length===0
+          ? html`<div class="empty"><${Icon} name="inbox"/>No categories found in mh_categories.</div>`
+          : catList.map(c=>{
+          const on=armed.has(c.norm);
+          return html`<div class="entry" key=${c.norm}>
             <span class=${"dot "+(on?"c":"")} style=${{background:on?"var(--credit)":"var(--muted)"}}></span>
             <div class="grow">
-              <div><b style=${{textTransform:"capitalize"}}>${c}</b></div>
-              <div class="tiny muted">${on?"deducting stock":"not deducting"}</div>
+              <div><b style=${{textTransform:"capitalize"}}>${c.label}</b></div>
+              <div class="tiny muted">${on?"deducting stock":"not deducting"}${c.orphan?" · not in mh_categories":""}</div>
             </div>
-            <button class=${"btn sm "+(on?"ghost":"")} disabled=${busy===c}
-              onClick=${()=>toggleCat(c)}>${busy===c?"…":(on?"Turn off":"Turn on")}</button>
+            <button class=${"btn sm "+(on?"ghost":"")} disabled=${busy===c.norm}
+              onClick=${()=>toggleCat(c.norm)}>${busy===c.norm?"…":(on?"Turn off":"Turn on")}</button>
           </div>`;
         })}
         <div class="tiny muted" style=${{margin:"12px 2px"}}>
-          Category names must match the billing app's menu categories exactly. A category with no mappings is harmless — its lines simply queue up under Mapping.
+          ${allCats.length
+            ? "Listed from the billing app's mh_categories table."
+            : "Couldn't read mh_categories — showing the legacy list instead. Check the table exists and is readable."}
+          ${' '}A category with no mappings is harmless — its lines simply queue up under Mapping.
         </div>
       </div>`}
       `}
