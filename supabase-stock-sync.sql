@@ -242,6 +242,11 @@ $$;
 --    app closed mid-settle). Surface this in the Inventory app the same way
 --    "Reconcile bills" already works for ledger sales import.
 -- ---------------------------------------------------------------------------
+--    A bill only belongs here if it actually HAS a line in a stock-deducting
+--    category. Without that test, a bill of purely non-deducting items (say a
+--    food-only bill when only drinks deduct) has nothing to log, so it never
+--    gets a row in mh_stock_sync_log and sits in this view for ever while
+--    "Apply" does nothing — the bill #117 case.
 create or replace view public.mh_stock_sync_pending as
 select c.id            as bill_id,
        c.bill_no,
@@ -251,7 +256,16 @@ select c.id            as bill_id,
   from public.mh_customers c
  where c.status = 'settled'
    and coalesce(c.date::date, c.created_at::date) >= date '2026-07-08'
-   and not exists (select 1 from public.mh_stock_sync_log l where l.bill_id = c.id);
+   and not exists (select 1 from public.mh_stock_sync_log l where l.bill_id = c.id)
+   and exists (
+     select 1
+       from jsonb_array_elements(
+              case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
+            ) as li
+       join public.mh_categories cat
+         on public.mh_norm(cat.name) = public.mh_norm(li ->> 'category')
+        and cat.deducts_stock
+   );
 
 -- ---------------------------------------------------------------------------
 -- 8. RLS — these functions are SECURITY DEFINER, so they bypass RLS by design.

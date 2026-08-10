@@ -2255,6 +2255,9 @@
     const [maps,setMaps]=useState([]);
     const [cats,setCats]=useState([]);
     const [allCats,setAllCats]=useState([]);       // every category from mh_categories
+    const [catErr,setCatErr]=useState("");         // why mh_categories couldn't be read
+    const [seenCats,setSeenCats]=useState([]);     // categories observed on real bills
+    const [billLines,setBillLines]=useState({});   // bill id -> [{name,category}]
     const [menuRows,setMenuRows]=useState([]);     // {name, category} seen on settled bills
     const [draft,setDraft]=useState({});           // menu_name -> {item_id, ratio}
     const [manual,setManual]=useState({menu:"",item_id:"",ratio:"1"});
@@ -2273,27 +2276,35 @@
         setErr("");
 
         // Category list comes from the billing app's own table — never hardcoded.
-        // Soft-fail: if it can't be read the tab falls back to the legacy list
-        // rather than showing nothing.
-        const cc=await sb.from("mh_categories").select("*").order("name");
-        if(!cc.error && cc.data) setAllCats(cc.data);
+        // Keep the real error: "missing table" and "RLS denied" need different
+        // fixes, and swallowing it leaves nothing to diagnose.
+        const cc=await sb.from("mh_categories").select("*");
+        if(!cc.error && cc.data){ setAllCats(cc.data); setCatErr(""); }
+        else { setAllCats([]); setCatErr((cc.error&&cc.error.message)||"unknown error"); }
 
-        // Menu item names for the manual pairing picker. There is no menu table
-        // in this app's schema — the only place menu names exist is the items
-        // JSON on settled bills, so distinct names are derived from there.
-        const bb=await sb.from("mh_customers").select("items,status").eq("status","settled").limit(400);
+        // Menu names for the pairing picker, and each line's category. There is
+        // no menu table in this schema — the only place either exists is the
+        // items JSON on settled bills, so both are derived from there. That also
+        // gives a real fallback for the category list when mh_categories is
+        // unreadable, and lets the pending list tell which bills are actionable.
+        const bb=await sb.from("mh_customers").select("id,items,status").eq("status","settled").limit(500);
         if(!bb.error && bb.data){
-          const seen={};
+          const seen={}, catSeen={}, byBill={};
           bb.data.forEach(b=>{
             let its=b.items;
             if(typeof its==="string"){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
-            (Array.isArray(its)?its:[]).forEach(li=>{
-              const nm=String((li&&li.name)||"").trim(); if(!nm) return;
-              const k=normName(nm);
-              if(!seen[k]) seen[k]={ name:nm, category:String((li&&li.category)||"").trim() };
+            const lines=(Array.isArray(its)?its:[]).map(li=>({
+              name:String((li&&li.name)||"").trim(),
+              category:String((li&&li.category)||"").trim() }));
+            byBill[String(b.id)]=lines;
+            lines.forEach(li=>{
+              if(li.name){ const k=normName(li.name); if(!seen[k]) seen[k]={ name:li.name, category:li.category }; }
+              if(li.category){ const ck=normName(li.category); if(!catSeen[ck]) catSeen[ck]=li.category; }
             });
           });
           setMenuRows(Object.values(seen).sort((a,b)=>a.name.localeCompare(b.name)));
+          setBillLines(byBill);
+          setSeenCats(Object.values(catSeen).sort((a,b)=>a.localeCompare(b)));
         }
       }catch(e){
         // Most likely cause by far: the stock-sync migration hasn't been run.
@@ -2323,11 +2334,12 @@
     }
 
     async function syncAll(){
-      if(!pending.length) return;
-      if(!confirm(`Apply stock deductions for ${pending.length} bill${pending.length===1?"":"s"}?`)) return;
+      const list=pendingSplit.act;
+      if(!list.length) return;
+      if(!confirm(`Apply stock deductions for ${list.length} bill${list.length===1?"":"s"}?`)) return;
       setBusy("all");
       let applied=0, unm=0, failed=0;
-      for(const b of pending){
+      for(const b of list){
         try{ const r=await applyBill(b.bill_id); applied+=r.applied||0; unm+=r.unmapped||0; }
         catch(e){ failed++; }
       }
@@ -2423,10 +2435,25 @@
       const out=[], seen=new Set();
       const push=(label,orphan)=>{ const norm=normName(label); if(!norm||seen.has(norm)) return; seen.add(norm); out.push({norm,label,orphan:!!orphan}); };
       if(allCats.length) allCats.forEach(c=> push(c.name!=null?c.name:c.category_name));
+      else if(seenCats.length) seenCats.forEach(c=> push(c));   // real categories off real bills
       else SYNC_CATS_FALLBACK.forEach(c=> push(c));
       cats.forEach(c=> push(c.name_norm, true));
       return out.sort((a,b)=> a.label.localeCompare(b.label));
-    },[allCats,cats]);
+    },[allCats,seenCats,cats]);
+
+    // A bill is only worth showing under "Not synced" if it actually has a line
+    // in an armed category. Otherwise Apply does nothing and the bill sits in
+    // the queue for ever. Bills whose lines we couldn't load are kept visible —
+    // better a redundant row than a silently hidden one.
+    const pendingSplit=useMemo(()=>{
+      const act=[], inert=[];
+      pending.forEach(b=>{
+        const lines=billLines[String(b.bill_id)];
+        if(!lines){ act.push(b); return; }
+        (lines.some(li=> armed.has(normName(li.category))) ? act : inert).push(b);
+      });
+      return { act, inert };
+    },[pending,billLines,armed]);
     async function toggleCat(name){
       const on=armed.has(name);
       if(on && !confirm(`Stop deducting stock for "${name}"? Bills already deducted are unaffected.`)) return;
@@ -2448,7 +2475,7 @@
       ${err && html`<div class="banner net">${err}</div>`}
       ${loading ? html`<div class="empty"><span class="spin"></span><div style=${{marginTop:10}}>Loading…</div></div>` : html`
       <div class="seg" style=${{marginTop:4}}>
-        <button class=${tab==="pending"?"on":""} onClick=${()=>setTab("pending")}>Not synced (${pending.length})</button>
+        <button class=${tab==="pending"?"on":""} onClick=${()=>setTab("pending")}>Not synced (${pendingSplit.act.length})</button>
         <button class=${tab==="mapping"?"on":""} onClick=${()=>setTab("mapping")}>Mapping (${gaps.length})</button>
         <button class=${tab==="cats"?"on":""} onClick=${()=>setTab("cats")}>Categories</button>
       </div>
@@ -2457,12 +2484,15 @@
         <p class="tiny muted" style=${{margin:"12px 2px"}}>
           Settled bills whose stock was never applied — usually settled on an older app build, or the sync call didn't reach the server. Applying is safe to repeat; a bill already deducted won't deduct twice.
         </p>
-        ${pending.length===0
+        ${pendingSplit.inert.length>0 && html`<div class="tiny muted" style=${{margin:"0 2px 10px"}}>
+          ${pendingSplit.inert.length} settled bill${pendingSplit.inert.length===1?"":"s"} hidden — nothing on ${pendingSplit.inert.length===1?"it":"them"} belongs to a category that deducts stock, so there is nothing to apply.
+        </div>`}
+        ${pendingSplit.act.length===0
           ? html`<div class="empty"><${Icon} name="check"/>Every settled bill has been applied.</div>`
           : html`
             <button class="btn" style=${{width:"100%",marginBottom:10}} disabled=${busy==="all"}
-              onClick=${syncAll}>${busy==="all"?"Applying…":`Apply all ${pending.length}`}</button>
-            ${pending.map(b=> html`<div class="entry" key=${b.bill_id}>
+              onClick=${syncAll}>${busy==="all"?"Applying…":`Apply all ${pendingSplit.act.length}`}</button>
+            ${pendingSplit.act.map(b=> html`<div class="entry" key=${b.bill_id}>
               <span class="dot d"></span>
               <div class="grow">
                 <div><b>${b.bill_no?("#"+b.bill_no):"(no number)"}</b> <span class="tiny muted">${b.customer||""}</span></div>
@@ -2557,10 +2587,17 @@
               onClick=${()=>toggleCat(c.norm)}>${busy===c.norm?"…":(on?"Turn off":"Turn on")}</button>
           </div>`;
         })}
+        ${!allCats.length && catErr && html`<div class="banner net" style=${{marginTop:10}}>
+          <b>mh_categories unreadable</b> — ${seenCats.length?"listing categories seen on real bills instead.":"falling back to a built-in list."}<br/>
+          <span class="tiny">Postgres said: <code>${catErr}</code></span><br/>
+          <span class="tiny">"relation does not exist" = wrong table name or schema. Empty result with no error = row-level security is hiding it; grant select to the app role.</span>
+        </div>`}
         <div class="tiny muted" style=${{margin:"12px 2px"}}>
           ${allCats.length
             ? "Listed from the billing app's mh_categories table."
-            : "Couldn't read mh_categories — showing the legacy list instead. Check the table exists and is readable."}
+            : seenCats.length
+            ? "Derived from categories actually seen on settled bills."
+            : "Built-in fallback list."}
           ${' '}A category with no mappings is harmless — its lines simply queue up under Mapping.
         </div>
       </div>`}
