@@ -12,7 +12,9 @@
 --    * Billing app does NOT currently touch stock -> no double-deduction risk.
 --    * Category source of truth = mh_categories (never hardcode names).
 --
---  ASSUMPTION TO VERIFY before running: mh_categories has columns (id, name).
+--  VERIFIED 2026-07-09: mh_categories is (id text, list jsonb) — the whole
+--  category list sits inside one JSON column, so it is a pick-list source only.
+--  The armed set lives in mh_stock_categories (created below).
 --  Adjust the ALTER + joins below if the real shape differs.
 --
 --  REVIEW EVERY TABLE/COLUMN NAME AGAINST THE LIVE SCHEMA BEFORE RUNNING.
@@ -20,17 +22,26 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- 1. Which categories deduct stock — stored as a flag, not a hardcoded list.
---    Fixes the "Cold Drinks" vs "Cold Drink" string-matching problem for good.
+-- 1. Which categories deduct stock.
+--
+--    NOTE: mh_categories cannot hold this flag. It is not a row-per-category
+--    table — its shape is (id text, list jsonb), i.e. the billing app stores
+--    the entire category list inside one JSON column. There is no per-category
+--    row to add a boolean to.
+--
+--    So the armed set lives in its own table, keyed by normalised name. The
+--    admin screen writes it; mh_categories stays read-only to this app and is
+--    used only to populate the pick-list.
 -- ---------------------------------------------------------------------------
-alter table public.mh_categories
-  add column if not exists deducts_stock boolean not null default false;
+create table if not exists public.mh_stock_categories (
+  name_norm  text primary key,
+  created_at timestamptz not null default now()
+);
 
--- Turn it on for the four target categories. Adjust names to match the real
--- rows in mh_categories exactly (case-insensitive match used here).
-update public.mh_categories
-   set deducts_stock = true
- where lower(trim(name)) in ('starter','cold drinks','water','cigarette');
+-- Arm the initial four. Safe to re-run.
+insert into public.mh_stock_categories(name_norm)
+values ('starter'), ('cold drinks'), ('water bottle'), ('cigarette')
+on conflict (name_norm) do nothing;
 
 -- ---------------------------------------------------------------------------
 -- 2. Name normalization helper — one definition used by both the mapping
@@ -132,10 +143,9 @@ as $$
     (sl.id is not null)                        as already_applied,
     (m.id is not null)                         as is_mapped
   from lines l
-  -- only categories flagged as stock-deducting
-  join public.mh_categories cat
-    on public.mh_norm(cat.name) = public.mh_norm(l.category)
-   and cat.deducts_stock
+  -- only categories the admin screen has armed
+  join public.mh_stock_categories cat
+    on cat.name_norm = public.mh_norm(l.category)
   left join public.mh_item_map m
     on m.menu_name_norm = public.mh_norm(l.menu_name)
    and m.active
@@ -242,6 +252,11 @@ $$;
 --    app closed mid-settle). Surface this in the Inventory app the same way
 --    "Reconcile bills" already works for ledger sales import.
 -- ---------------------------------------------------------------------------
+--    A bill only belongs here if it actually HAS a line in a stock-deducting
+--    category. Without that test, a bill of purely non-deducting items (say a
+--    food-only bill when only drinks deduct) has nothing to log, so it never
+--    gets a row in mh_stock_sync_log and sits in this view for ever while
+--    "Apply" does nothing — the bill #117 case.
 create or replace view public.mh_stock_sync_pending as
 select c.id            as bill_id,
        c.bill_no,
@@ -251,7 +266,15 @@ select c.id            as bill_id,
   from public.mh_customers c
  where c.status = 'settled'
    and coalesce(c.date::date, c.created_at::date) >= date '2026-07-08'
-   and not exists (select 1 from public.mh_stock_sync_log l where l.bill_id = c.id);
+   and not exists (select 1 from public.mh_stock_sync_log l where l.bill_id = c.id)
+   and exists (
+     select 1
+       from jsonb_array_elements(
+              case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
+            ) as li
+       join public.mh_stock_categories cat
+         on cat.name_norm = public.mh_norm(li ->> 'category')
+   );
 
 -- ---------------------------------------------------------------------------
 -- 8. RLS — these functions are SECURITY DEFINER, so they bypass RLS by design.
