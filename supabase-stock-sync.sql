@@ -12,7 +12,9 @@
 --    * Billing app does NOT currently touch stock -> no double-deduction risk.
 --    * Category source of truth = mh_categories (never hardcode names).
 --
---  ASSUMPTION TO VERIFY before running: mh_categories has columns (id, name).
+--  VERIFIED 2026-07-09: mh_categories is (id text, list jsonb) — the whole
+--  category list sits inside one JSON column, so it is a pick-list source only.
+--  The armed set lives in mh_stock_categories (created below).
 --  Adjust the ALTER + joins below if the real shape differs.
 --
 --  REVIEW EVERY TABLE/COLUMN NAME AGAINST THE LIVE SCHEMA BEFORE RUNNING.
@@ -20,32 +22,26 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- 0. FIRST: find out what mh_categories actually looks like.
---    An earlier run failed with
---      ERROR: 42703: column cat.name does not exist
---    so the label column is NOT called "name". Run this and read the output
---    before running anything below it:
+-- 1. Which categories deduct stock.
 --
---      select column_name, data_type
---        from information_schema.columns
---       where table_schema = 'public' and table_name = 'mh_categories'
---       order by ordinal_position;
+--    NOTE: mh_categories cannot hold this flag. It is not a row-per-category
+--    table — its shape is (id text, list jsonb), i.e. the billing app stores
+--    the entire category list inside one JSON column. There is no per-category
+--    row to add a boolean to.
 --
---    Then replace every  <<CAT_NAME_COL>>  below with the real column.
+--    So the armed set lives in its own table, keyed by normalised name. The
+--    admin screen writes it; mh_categories stays read-only to this app and is
+--    used only to populate the pick-list.
 -- ---------------------------------------------------------------------------
+create table if not exists public.mh_stock_categories (
+  name_norm  text primary key,
+  created_at timestamptz not null default now()
+);
 
--- ---------------------------------------------------------------------------
--- 1. Which categories deduct stock — stored as a flag, not a hardcoded list.
---    Fixes the "Cold Drinks" vs "Cold Drink" string-matching problem for good.
--- ---------------------------------------------------------------------------
-alter table public.mh_categories
-  add column if not exists deducts_stock boolean not null default false;
-
--- Turn it on for the four target categories. Adjust names to match the real
--- rows in mh_categories exactly (case-insensitive match used here).
-update public.mh_categories
-   set deducts_stock = true
- where public.mh_norm(<<CAT_NAME_COL>>) in ('starter','cold drinks','water','cigarette');
+-- Arm the initial four. Safe to re-run.
+insert into public.mh_stock_categories(name_norm)
+values ('starter'), ('cold drinks'), ('water bottle'), ('cigarette')
+on conflict (name_norm) do nothing;
 
 -- ---------------------------------------------------------------------------
 -- 2. Name normalization helper — one definition used by both the mapping
@@ -147,10 +143,9 @@ as $$
     (sl.id is not null)                        as already_applied,
     (m.id is not null)                         as is_mapped
   from lines l
-  -- only categories flagged as stock-deducting
-  join public.mh_categories cat
-    on public.mh_norm(cat.<<CAT_NAME_COL>>) = public.mh_norm(l.category)
-   and cat.deducts_stock
+  -- only categories the admin screen has armed
+  join public.mh_stock_categories cat
+    on cat.name_norm = public.mh_norm(l.category)
   left join public.mh_item_map m
     on m.menu_name_norm = public.mh_norm(l.menu_name)
    and m.active
@@ -277,9 +272,8 @@ select c.id            as bill_id,
        from jsonb_array_elements(
               case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
             ) as li
-       join public.mh_categories cat
-         on public.mh_norm(cat.<<CAT_NAME_COL>>) = public.mh_norm(li ->> 'category')
-        and cat.deducts_stock
+       join public.mh_stock_categories cat
+         on cat.name_norm = public.mh_norm(li ->> 'category')
    );
 
 -- ---------------------------------------------------------------------------

@@ -2244,21 +2244,27 @@
   const SYNC_CATS_FALLBACK=["starter","cold drinks","water bottle","cigarette"];
   // Must match the DB's mh_norm(): lowercase, trim, collapse inner whitespace.
   const normName=(s)=> String(s==null?"":s).toLowerCase().trim().replace(/\s+/g," ");
-  // mh_categories belongs to the billing app and its label column isn't named
-  // consistently, so don't hardcode one. Try the usual names, then fall back to
-  // the first plain-text column that isn't an id / flag / timestamp.
+  // mh_categories is NOT a row-per-category table: it is (id text, list jsonb),
+  // i.e. the billing app keeps the whole category list inside one JSON column.
+  // Flatten it, tolerating array-of-strings, array-of-objects and object-map.
   const CAT_LABEL_KEYS=["name","category_name","category","title","label","cat_name","display_name"];
-  function catLabelOf(row){
-    if(!row||typeof row!=="object") return "";
-    for(const k of CAT_LABEL_KEYS){ const v=row[k]; if(typeof v==="string" && v.trim()) return v.trim(); }
-    for(const k of Object.keys(row)){
-      const v=row[k];
-      if(typeof v!=="string" || !v.trim()) continue;
-      if(/(^|_)id$|_at$|uuid/i.test(k)) continue;
-      if(/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) continue;   // looks like a uuid value
-      return v.trim();
-    }
-    return "";
+  function catsFromRows(rows){
+    const out=[];
+    const takeName=(v)=>{
+      if(typeof v==="string") return v;
+      if(v && typeof v==="object"){ for(const k of CAT_LABEL_KEYS){ if(typeof v[k]==="string" && v[k].trim()) return v[k]; } }
+      return "";
+    };
+    (rows||[]).forEach(r=>{
+      let l = r && r.list;
+      if(typeof l==="string"){ try{ l=JSON.parse(l); }catch(e){ l=null; } }
+      if(Array.isArray(l)) l.forEach(v=> out.push(takeName(v)));
+      else if(l && typeof l==="object") Object.keys(l).forEach(k=>{
+        // object map: either {"Starter":true} or {"Starter":{...}}
+        out.push(takeName(l[k]) || k);
+      });
+    });
+    return out.map(s=>String(s||"").trim()).filter(Boolean);
   }
   const normCat=(s)=> String(s||"").toLowerCase().trim().replace(/\s+/g," ");
 
@@ -2450,7 +2456,7 @@
     const catList=useMemo(()=>{
       const out=[], seen=new Set();
       const push=(label,orphan)=>{ const norm=normName(label); if(!norm||seen.has(norm)) return; seen.add(norm); out.push({norm,label,orphan:!!orphan}); };
-      if(allCats.length) allCats.forEach(c=> push(catLabelOf(c)));
+      if(allCats.length) catsFromRows(allCats).forEach(c=> push(c));
       else if(seenCats.length) seenCats.forEach(c=> push(c));   // real categories off real bills
       else SYNC_CATS_FALLBACK.forEach(c=> push(c));
       cats.forEach(c=> push(c.name_norm, true));
@@ -2609,9 +2615,9 @@
           <span class="tiny">"relation does not exist" = wrong table name or schema. "column ... does not exist" = the label column is named something else. Empty result with no error = row-level security is hiding it; grant select to the app role.</span>
         </div>`}
         ${allCats.length>0 && catList.filter(c=>!c.orphan).length===0 && html`<div class="banner net" style=${{marginTop:10}}>
-          <b>mh_categories read, but no text column looked like a category name.</b><br/>
-          <span class="tiny">Columns found: <code>${Object.keys(allCats[0]||{}).join(", ")||"(none)"}</code></span><br/>
-          <span class="tiny">Tell me which one holds the category name and I'll wire it directly.</span>
+          <b>mh_categories read, but no names could be pulled out of its <code>list</code> column.</b><br/>
+          <span class="tiny">First row looks like: <code>${(()=>{ try{ return JSON.stringify(allCats[0]).slice(0,220); }catch(e){ return "(unreadable)"; } })()}</code></span><br/>
+          <span class="tiny">Send me that and I'll wire the exact shape.</span>
         </div>`}
         <div class="tiny muted" style=${{margin:"12px 2px"}}>
           ${allCats.length
