@@ -125,6 +125,47 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
   `claude/drop-mh-parties`). Not merged/compiled yet: needs a build before
   merge. Details + drop SQL in `drop-mh-parties.md`.
 
+## Stock sync admin (web-only feature — port only if android needs the
+## same admin surface; this whole screen didn't exist on android before)
+
+- [TODO] **`mh_categories` real schema — read this before touching sync on
+  android at all.** It is `(id text, list jsonb)`, NOT row-per-category. The
+  billing app's entire category list sits inside one JSON column on what is
+  effectively a single settings row. There is no `name` column, no per-row
+  category, nothing to add a boolean flag to. Confirmed against the actual
+  Postgres error (`42703: column cat.name does not exist`) and a direct
+  `information_schema.columns` query — don't re-guess this.
+  - Category list must be read by flattening `list`: handle array-of-strings,
+    array-of-objects (look for a `name`/`title`/`label`-ish key), an
+    object keyed by category name, and the case where `list` is JSON stored
+    as a string rather than native jsonb.
+  - Which categories currently deduct stock is tracked in a SEPARATE table,
+    `mh_stock_categories (name_norm text primary key)` — one row per armed
+    category, keyed by the same normalized-name function used everywhere
+    else (`lowercase, trim, collapse whitespace`). Arming/disarming = insert/
+    delete a row. This table is the source of truth for the sync RPC, not
+    `mh_categories`.
+- [TODO] Dynamic category toggle UI — list every category found in
+  `mh_categories.list`, each with Turn on/off + "deducting stock" /
+  "not deducting" status, backed by `mh_stock_categories` above. An armed
+  category whose name no longer appears in the flattened list (renamed or
+  removed upstream) must stay visible and toggleable, or it keeps deducting
+  with no way to turn it off.
+- [TODO] Proactive item-mapping UI (menu item → inventory item + ratio),
+  addable before anything sells unmapped, not just from the reactive
+  unmapped-items queue. No menu table exists in this schema — menu names are
+  derived from distinct item names found in settled bills' `items` JSON.
+  Saving a mapping should replay any bills already waiting on that name.
+- [TODO] Bills with nothing to deduct must not sit in "pending" forever. A
+  settled bill whose every line is in a non-deducting category never
+  produces a sync-log row, so a naive "settled bills with no log row" query
+  lists it permanently while there is nothing to apply. Filter it out (or on
+  android's own data model, the equivalent condition) both client-side and
+  in whatever query defines the pending set.
+- [TODO] Stock-move Excel export button, mirrors the ledger export (.xlsx,
+  CSV fallback): date, item, category, movement type, qty, unit, unit cost,
+  computed value, note, recorded-by.
+
 ## Bug fixes (P0, port to android if same data-layer bug exists)
 
 - [TODO] Supplier-ledger purchase was posted as `entry_type:"credit"`,
@@ -174,8 +215,15 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
   ALTER TABLE mh_ledger ADD COLUMN IF NOT EXISTS imported_by       TEXT;
   ```
 - [TODO] `supabase-stock-sync.sql` (repo root) — R1 cross-app stock sync
-  schema + RPCs, drafted, NOT applied. Verify `mh_categories` column names
-  and the `mh_customers.items` JSON keys before running.
+  schema + RPCs, drafted, NOT applied, but now runnable end-to-end (no
+  placeholders left). Creates `mh_stock_categories` itself with
+  `CREATE TABLE IF NOT EXISTS` and seeds 4 names — **if PR #16's admin
+  screen already created that table with a different shape on this DB,
+  reconcile before running, don't just execute blind.** `mh_categories`
+  column assumption has been corrected (see the Stock sync admin section
+  above) — no longer needs verification, it's confirmed `(id text, list
+  jsonb)`. Still verify `mh_customers.items` JSON keys (`name`, `qty`,
+  `category`) before running.
 - [TODO] `supabase-rls.sql` (repo root) — Row Level Security policies
   drafted for finding: client-side-only authorization (any user can
   forge `created_by`, run admin actions via API directly, deactivated

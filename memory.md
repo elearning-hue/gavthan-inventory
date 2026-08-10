@@ -164,6 +164,37 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-07-09 (later)
+- **Stock-sync config made dynamic, not hardcoded.** Categories tab now reads
+  `mh_categories` instead of the fixed `SYNC_CATS` array; Mapping tab gained a
+  proactive "Add a mapping" form (menu name autocompleted from settled-bill
+  items JSON, since no menu table exists); Stock moves gained an Export
+  button (.xlsx, CSV fallback, mirrors the ledger export).
+- **Bill #117 diagnosed and fixed.** `mh_stock_sync_pending` lists settled
+  bills with no `mh_stock_sync_log` row — a bill whose lines are ALL in
+  non-deducting categories never gets a log row, so it stayed "pending"
+  forever with Apply doing nothing. Fixed client-side (splits pending into
+  actionable/inert using bill lines already loaded, hides inert with a
+  count) and in the view (added an EXISTS test requiring at least one
+  deducting-category line). Client-side fix works without the migration.
+- **`mh_categories` schema discovered — not row-per-category.** Real shape
+  is `(id text, list jsonb)`: the billing app keeps its whole category list
+  inside one JSON column. Two earlier guesses (a `name` column, then any
+  text column) both failed against the real Postgres error
+  (`42703: column cat.name does not exist`). Fixed:
+  - Client flattens `list` (array-of-strings / array-of-objects /
+    object-keyed-by-name / JSON-stored-as-text all handled) instead of
+    reading columns.
+  - SQL's `deducts_stock` boolean-on-`mh_categories` design was invalid
+    (no per-category rows to flag). Replaced with `mh_stock_categories`
+    keyed by normalized name — matching what the shipped admin screen
+    (PR #16) already reads/writes. `supabase-stock-sync.sql` is runnable
+    again with no placeholders.
+  **Note for whoever applies the migration:** the file now does
+  `CREATE TABLE IF NOT EXISTS mh_stock_categories` and seeds 4 names. If
+  PR #16 already created that table with a different shape, reconcile
+  before running.
+
 ### 2026-07-09
 - **Flexible staff attribution.** Credit is no longer locked at import.
   `created_by` keeps the import-time attribution (now nullable — "leave
