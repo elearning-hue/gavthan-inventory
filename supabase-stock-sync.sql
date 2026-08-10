@@ -20,6 +20,21 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
+-- 0. FIRST: find out what mh_categories actually looks like.
+--    An earlier run failed with
+--      ERROR: 42703: column cat.name does not exist
+--    so the label column is NOT called "name". Run this and read the output
+--    before running anything below it:
+--
+--      select column_name, data_type
+--        from information_schema.columns
+--       where table_schema = 'public' and table_name = 'mh_categories'
+--       order by ordinal_position;
+--
+--    Then replace every  <<CAT_NAME_COL>>  below with the real column.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
 -- 1. Which categories deduct stock — stored as a flag, not a hardcoded list.
 --    Fixes the "Cold Drinks" vs "Cold Drink" string-matching problem for good.
 -- ---------------------------------------------------------------------------
@@ -30,7 +45,7 @@ alter table public.mh_categories
 -- rows in mh_categories exactly (case-insensitive match used here).
 update public.mh_categories
    set deducts_stock = true
- where lower(trim(name)) in ('starter','cold drinks','water','cigarette');
+ where public.mh_norm(<<CAT_NAME_COL>>) in ('starter','cold drinks','water','cigarette');
 
 -- ---------------------------------------------------------------------------
 -- 2. Name normalization helper — one definition used by both the mapping
@@ -134,7 +149,7 @@ as $$
   from lines l
   -- only categories flagged as stock-deducting
   join public.mh_categories cat
-    on public.mh_norm(cat.name) = public.mh_norm(l.category)
+    on public.mh_norm(cat.<<CAT_NAME_COL>>) = public.mh_norm(l.category)
    and cat.deducts_stock
   left join public.mh_item_map m
     on m.menu_name_norm = public.mh_norm(l.menu_name)
@@ -263,7 +278,7 @@ select c.id            as bill_id,
               case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
             ) as li
        join public.mh_categories cat
-         on public.mh_norm(cat.name) = public.mh_norm(li ->> 'category')
+         on public.mh_norm(cat.<<CAT_NAME_COL>>) = public.mh_norm(li ->> 'category')
         and cat.deducts_stock
    );
 

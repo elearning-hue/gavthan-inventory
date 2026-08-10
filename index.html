@@ -2244,6 +2244,22 @@
   const SYNC_CATS_FALLBACK=["starter","cold drinks","water bottle","cigarette"];
   // Must match the DB's mh_norm(): lowercase, trim, collapse inner whitespace.
   const normName=(s)=> String(s==null?"":s).toLowerCase().trim().replace(/\s+/g," ");
+  // mh_categories belongs to the billing app and its label column isn't named
+  // consistently, so don't hardcode one. Try the usual names, then fall back to
+  // the first plain-text column that isn't an id / flag / timestamp.
+  const CAT_LABEL_KEYS=["name","category_name","category","title","label","cat_name","display_name"];
+  function catLabelOf(row){
+    if(!row||typeof row!=="object") return "";
+    for(const k of CAT_LABEL_KEYS){ const v=row[k]; if(typeof v==="string" && v.trim()) return v.trim(); }
+    for(const k of Object.keys(row)){
+      const v=row[k];
+      if(typeof v!=="string" || !v.trim()) continue;
+      if(/(^|_)id$|_at$|uuid/i.test(k)) continue;
+      if(/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) continue;   // looks like a uuid value
+      return v.trim();
+    }
+    return "";
+  }
   const normCat=(s)=> String(s||"").toLowerCase().trim().replace(/\s+/g," ");
 
   function StockSyncSheet({items,me,onClose,onChanged}){
@@ -2434,7 +2450,7 @@
     const catList=useMemo(()=>{
       const out=[], seen=new Set();
       const push=(label,orphan)=>{ const norm=normName(label); if(!norm||seen.has(norm)) return; seen.add(norm); out.push({norm,label,orphan:!!orphan}); };
-      if(allCats.length) allCats.forEach(c=> push(c.name!=null?c.name:c.category_name));
+      if(allCats.length) allCats.forEach(c=> push(catLabelOf(c)));
       else if(seenCats.length) seenCats.forEach(c=> push(c));   // real categories off real bills
       else SYNC_CATS_FALLBACK.forEach(c=> push(c));
       cats.forEach(c=> push(c.name_norm, true));
@@ -2590,7 +2606,12 @@
         ${!allCats.length && catErr && html`<div class="banner net" style=${{marginTop:10}}>
           <b>mh_categories unreadable</b> — ${seenCats.length?"listing categories seen on real bills instead.":"falling back to a built-in list."}<br/>
           <span class="tiny">Postgres said: <code>${catErr}</code></span><br/>
-          <span class="tiny">"relation does not exist" = wrong table name or schema. Empty result with no error = row-level security is hiding it; grant select to the app role.</span>
+          <span class="tiny">"relation does not exist" = wrong table name or schema. "column ... does not exist" = the label column is named something else. Empty result with no error = row-level security is hiding it; grant select to the app role.</span>
+        </div>`}
+        ${allCats.length>0 && catList.filter(c=>!c.orphan).length===0 && html`<div class="banner net" style=${{marginTop:10}}>
+          <b>mh_categories read, but no text column looked like a category name.</b><br/>
+          <span class="tiny">Columns found: <code>${Object.keys(allCats[0]||{}).join(", ")||"(none)"}</code></span><br/>
+          <span class="tiny">Tell me which one holds the category name and I'll wire it directly.</span>
         </div>`}
         <div class="tiny muted" style=${{margin:"12px 2px"}}>
           ${allCats.length
