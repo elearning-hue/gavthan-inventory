@@ -164,6 +164,32 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-08-12
+- **Stock sync never deducted anything — three real causes, all found by
+  reading live data rather than guessing.**
+  1. **Bill lines key the category as `cat`, not `category`.** Reading the
+     wrong key gave null for every line, so nothing matched an armed
+     category, and the view's EXISTS test then excluded the bill entirely.
+     Signature of this bug: "0 bills not synced" AND "0 lines unmapped"
+     showing at the same time. Fixed to `coalesce(cat, category)` in both
+     SQL and client.
+  2. **`mh_customers.id` is TEXT, not uuid.** RPC params and
+     `mh_stock_sync_log.bill_id` declared uuid → `42883: operator does not
+     exist: text = uuid`, so the functions wouldn't even compile. All bill-id
+     types changed to text. `mh_inventory_items.id` / `mh_stock_moves.id`
+     ARE uuid (their FKs were accepted) — left alone.
+     Repair block added at the top of the SQL: `CREATE OR REPLACE` cannot
+     change a parameter type, so the old uuid-signature functions must be
+     dropped or both signatures coexist and calls stay ambiguous.
+  3. **My own pending filter hid everything when no category was armed** —
+     empty armed set meant no bill had a matching line, so all were
+     classified inert. Now an empty armed set shows everything plus a
+     banner.
+  **Correction worth remembering:** I twice blamed category *naming*
+  (singular vs plural). That was wrong — `"Cold Drinks"`/`"Water Bottle"`
+  matched exactly all along. The user pushed back correctly; the fault was
+  the `cat` key. Don't add fuzzy category matching.
+
 ### 2026-07-09 (later)
 - **Stock-sync config made dynamic, not hardcoded.** Categories tab now reads
   `mh_categories` instead of the fixed `SYNC_CATS` array; Mapping tab gained a

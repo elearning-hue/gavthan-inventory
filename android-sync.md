@@ -128,6 +128,34 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 ## Stock sync admin (web-only feature — port only if android needs the
 ## same admin surface; this whole screen didn't exist on android before)
 
+- [TODO] **SCHEMA TRUTHS — verified against the live DB 2026-08-12. Do not
+  re-derive these on android; all three cost a debugging cycle on web.**
+
+  1. **Bill line items key the category as `cat`, NOT `category`.** Real row
+     from bill #125:
+     ```json
+     { "id": "d4", "cat": "Cold Drinks", "qty": 1, "name": "सोडा", "price": 40,
+       "times": ["2026-08-11T12:45:54.482Z"] }
+     ```
+     Reading `category` returns null for every line, which matches no armed
+     category, so the bill silently deducts nothing AND disappears from the
+     pending list (both counters read 0 at once — that is the signature of
+     this bug, not of "nothing to do"). Web reads
+     `coalesce(cat, category)` on both the SQL and client side.
+     Other keys confirmed: `name`, `qty`, `price`, `id`, `times`.
+
+  2. **`mh_customers.id` is TEXT, not uuid.** Values look like uuids
+     (`74ffaa0b-d818-...`) but the column is text. Any RPC parameter or
+     column holding a bill id must be text or Postgres fails with
+     `42883: operator does not exist: text = uuid`.
+     By contrast `mh_inventory_items.id` and `mh_stock_moves.id` really are
+     uuid — confirmed by their foreign keys being accepted.
+
+  3. **Category names themselves are fine.** `"Cold Drinks"` / `"Water
+     Bottle"` on bills match `mh_stock_categories` exactly after
+     normalising. Do not add fuzzy/plural matching — the mismatch that
+     looked like a naming problem was actually truth 1 above.
+
 - [TODO] **`mh_categories` real schema — read this before touching sync on
   android at all.** It is `(id text, list jsonb)`, NOT row-per-category. The
   billing app's entire category list sits inside one JSON column on what is
@@ -162,6 +190,18 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
   lists it permanently while there is nothing to apply. Filter it out (or on
   android's own data model, the equivalent condition) both client-side and
   in whatever query defines the pending set.
+  **But guard the empty case:** if no category is armed at all, that filter
+  classifies *every* bill as inert and the list renders empty exactly when
+  the operator still has to arm one. Web treats an empty armed set as
+  "nothing can be judged inert" and shows everything, with a banner pointing
+  at the Categories tab. Same trap will exist on android.
+- [TODO] When fetching bill lines to decide what is actionable, do not use an
+  unordered `limit(n)`. PostgREST returns arbitrary rows, so a bill settled
+  today can fall outside the sample and be misjudged. Web orders newest-first
+  and additionally fetches the pending bill ids explicitly.
+- [TODO] Surface the exact category strings found on real bills next to the
+  armed list. Without it, a category that never matches is invisible — the
+  UI just shows nothing pending and gives no clue why.
 - [TODO] Stock-move Excel export button, mirrors the ledger export (.xlsx,
   CSV fallback): date, item, category, movement type, qty, unit, unit cost,
   computed value, note, recorded-by.
