@@ -22,6 +22,30 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
+-- 0. REPAIR — only needed if an earlier version of this file was already run.
+--    That version declared bill ids as uuid, which is wrong: mh_customers.id
+--    is TEXT here, so every "c.id = p_bill_id" raised
+--      ERROR: 42883: operator does not exist: text = uuid
+--    Postgres will not change a function's parameter type via CREATE OR
+--    REPLACE, so the old uuid-signature functions must be dropped first or
+--    both signatures end up defined and calls stay ambiguous.
+--    Safe to run on a clean database too — all three are IF EXISTS.
+-- ---------------------------------------------------------------------------
+drop function if exists public.mh_apply_bill_stock(uuid);
+drop function if exists public.mh_preview_bill_stock(uuid);
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+     where table_schema='public' and table_name='mh_stock_sync_log'
+       and column_name='bill_id' and data_type='uuid'
+  ) then
+    alter table public.mh_stock_sync_log alter column bill_id type text using bill_id::text;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- 1. Which categories deduct stock.
 --
 --    NOTE: mh_categories cannot hold this flag. It is not a row-per-category
@@ -81,7 +105,9 @@ create unique index if not exists mh_item_map_name_uniq
 -- ---------------------------------------------------------------------------
 create table if not exists public.mh_stock_sync_log (
   id                bigserial primary key,
-  bill_id           uuid        not null,
+  -- mh_customers.id is TEXT in this schema, not uuid. Declaring this uuid makes
+  -- every "c.id = p_bill_id" comparison fail with 42883 (text = uuid).
+  bill_id           text        not null,
   menu_name         text        not null,
   menu_name_norm    text        not null,
   inventory_item_id uuid        references public.mh_inventory_items(id),
@@ -104,7 +130,7 @@ create index if not exists mh_stock_sync_log_bill_idx
 --    can prompt the user about unmapped items BEFORE applying.
 --    Read-only: safe to call as often as the UI likes.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_preview_bill_stock(p_bill_id uuid)
+create or replace function public.mh_preview_bill_stock(p_bill_id text)
 returns table (
   menu_name          text,
   category           text,
@@ -175,7 +201,7 @@ $$;
 --    * Unmapped lines are recorded with status 'unmapped' and NOT deducted,
 --      so nothing fails silently — they show up in the reconcile view.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_apply_bill_stock(p_bill_id uuid)
+create or replace function public.mh_apply_bill_stock(p_bill_id text)
 returns table (applied integer, unmapped integer, skipped_reason text)
 language plpgsql security definer set search_path = public
 as $$
@@ -303,9 +329,9 @@ create policy mh_item_map_admin_write on public.mh_item_map
 -- The log is written only by the SECURITY DEFINER function; no direct writes.
 revoke insert, update, delete on public.mh_stock_sync_log from anon, authenticated;
 
-revoke all on function public.mh_apply_bill_stock(uuid) from public, anon;
-grant execute on function public.mh_apply_bill_stock(uuid)   to authenticated;
-grant execute on function public.mh_preview_bill_stock(uuid) to authenticated;
+revoke all on function public.mh_apply_bill_stock(text) from public, anon;
+grant execute on function public.mh_apply_bill_stock(text)   to authenticated;
+grant execute on function public.mh_preview_bill_stock(text) to authenticated;
 
 -- ============================================================================
 --  BILLING APP CALL SEQUENCE (on settle)
