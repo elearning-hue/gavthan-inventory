@@ -2309,10 +2309,21 @@
         // items JSON on settled bills, so both are derived from there. That also
         // gives a real fallback for the category list when mh_categories is
         // unreadable, and lets the pending list tell which bills are actionable.
-        const bb=await sb.from("mh_customers").select("id,items,status").eq("status","settled").limit(500);
+        // Newest first and, on top of that, the pending bills by id explicitly.
+        // An unordered limit returns arbitrary rows, so a bill settled today
+        // could fall outside the sample — and a pending bill whose lines are
+        // missing can't be judged actionable.
+        const pendIds=(p.data||[]).map(r=>r.bill_id).filter(Boolean);
+        const [bb,bp]=await Promise.all([
+          sb.from("mh_customers").select("id,items,status").eq("status","settled")
+            .order("created_at",{ascending:false}).limit(500),
+          pendIds.length
+            ? sb.from("mh_customers").select("id,items,status").in("id",pendIds)
+            : Promise.resolve({data:[],error:null})
+        ]);
         if(!bb.error && bb.data){
           const seen={}, catSeen={}, byBill={};
-          bb.data.forEach(b=>{
+          (bb.data||[]).concat((bp&&!bp.error&&bp.data)||[]).forEach(b=>{
             let its=b.items;
             if(typeof its==="string"){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
             const lines=(Array.isArray(its)?its:[]).map(li=>({
@@ -2468,6 +2479,10 @@
     // the queue for ever. Bills whose lines we couldn't load are kept visible —
     // better a redundant row than a silently hidden one.
     const pendingSplit=useMemo(()=>{
+      // Nothing armed = nothing can be judged inert. Hiding every bill here
+      // would make the tab look empty exactly when the operator still has to
+      // arm a category, so show them all instead.
+      if(armed.size===0) return { act:pending.slice(), inert:[] };
       const act=[], inert=[];
       pending.forEach(b=>{
         const lines=billLines[String(b.bill_id)];
@@ -2506,6 +2521,9 @@
         <p class="tiny muted" style=${{margin:"12px 2px"}}>
           Settled bills whose stock was never applied — usually settled on an older app build, or the sync call didn't reach the server. Applying is safe to repeat; a bill already deducted won't deduct twice.
         </p>
+        ${armed.size===0 && html`<div class="banner net" style=${{margin:"0 0 10px"}}>
+          No category is set to deduct stock yet, so applying a bill would do nothing. Arm one under <b>Categories</b> first.
+        </div>`}
         ${pendingSplit.inert.length>0 && html`<div class="tiny muted" style=${{margin:"0 2px 10px"}}>
           ${pendingSplit.inert.length} settled bill${pendingSplit.inert.length===1?"":"s"} hidden — nothing on ${pendingSplit.inert.length===1?"it":"them"} belongs to a category that deducts stock, so there is nothing to apply.
         </div>`}
