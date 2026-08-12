@@ -121,7 +121,11 @@ as $$
   with lines as (
     select
       nullif(trim(li ->> 'name'), '')          as menu_name,
-      nullif(trim(li ->> 'category'), '')      as category,
+      -- The billing app writes the category under "cat". "category" is kept as
+      -- a fallback only; reading the wrong key yields NULL, which silently
+      -- matches no armed category and makes the whole bill look like it has
+      -- nothing to deduct.
+      nullif(trim(coalesce(li ->> 'cat', li ->> 'category')), '') as category,
       coalesce((li ->> 'qty')::numeric, 0)     as bill_qty
     from public.mh_customers c
     cross join lateral jsonb_array_elements(
@@ -273,7 +277,7 @@ select c.id            as bill_id,
               case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
             ) as li
        join public.mh_stock_categories cat
-         on cat.name_norm = public.mh_norm(li ->> 'category')
+         on cat.name_norm = public.mh_norm(coalesce(li ->> 'cat', li ->> 'category'))
    );
 
 -- ---------------------------------------------------------------------------

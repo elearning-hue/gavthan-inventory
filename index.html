@@ -2326,9 +2326,12 @@
           (bb.data||[]).concat((bp&&!bp.error&&bp.data)||[]).forEach(b=>{
             let its=b.items;
             if(typeof its==="string"){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
+            // Bill lines carry the category under "cat"; "category" is only a
+            // fallback. Reading the wrong key gives "" for every line, which
+            // matches no armed category and makes every bill look inert.
             const lines=(Array.isArray(its)?its:[]).map(li=>({
               name:String((li&&li.name)||"").trim(),
-              category:String((li&&li.category)||"").trim() }));
+              category:String((li&&(li.cat||li.category))||"").trim() }));
             byBill[String(b.id)]=lines;
             lines.forEach(li=>{
               if(li.name){ const k=normName(li.name); if(!seen[k]) seen[k]={ name:li.name, category:li.category }; }
