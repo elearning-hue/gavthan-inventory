@@ -2627,6 +2627,25 @@
               onClick=${()=>toggleCat(c.norm)}>${busy===c.norm?"…":(on?"Turn off":"Turn on")}</button>
           </div>`;
         })}
+
+        <div class="tiny muted" style=${{margin:"16px 2px 6px",fontWeight:700,textTransform:"uppercase",letterSpacing:".05em"}}>Categories actually on bills</div>
+        <p class="tiny muted" style=${{margin:"0 2px 8px"}}>
+          The exact <code>category</code> strings found on recent settled bills. A bill only deducts when its string matches an armed name after normalising (lowercase, trimmed, single spaces) — so "Cold Drink" and "Cold Drinks" are different categories, and a near-miss here is why a bill can settle without deducting anything.
+        </p>
+        ${seenCats.length===0
+          ? html`<div class="tiny muted" style=${{margin:"0 2px 10px"}}>No categories seen — bill items may not carry a category field.</div>`
+          : seenCats.map(sc=>{
+              const on=armed.has(normName(sc));
+              return html`<div class="entry" key=${"seen-"+sc}>
+                <span class=${"dot "+(on?"c":"d")}></span>
+                <div class="grow">
+                  <div><b>${sc}</b> <span class="tiny muted">(normalises to "${normName(sc)}")</span></div>
+                  <div class="tiny muted">${on?"matches an armed category — will deduct":"no armed category matches — bills with only these lines never deduct"}</div>
+                </div>
+                ${!on && html`<button class="btn sm" disabled=${busy===normName(sc)}
+                  onClick=${()=>toggleCat(normName(sc))}>${busy===normName(sc)?"…":"Turn on"}</button>`}
+              </div>`;
+            })}
         ${!allCats.length && catErr && html`<div class="banner net" style=${{marginTop:10}}>
           <b>mh_categories unreadable</b> — ${seenCats.length?"listing categories seen on real bills instead.":"falling back to a built-in list."}<br/>
           <span class="tiny">Postgres said: <code>${catErr}</code></span><br/>
