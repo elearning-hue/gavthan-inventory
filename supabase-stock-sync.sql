@@ -46,6 +46,48 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- 0b. REPAIR — foreign keys created without an ON DELETE action.
+--     Postgres defaults to NO ACTION, so mh_stock_sync_log.move_id blocked
+--     every delete from mh_stock_moves:
+--       ERROR: 23503: update or delete on table "mh_stock_moves" violates
+--              foreign key constraint on table "mh_stock_sync_log"
+--     The log is an audit trail — it must outlive what it points at, not
+--     pin it in place. Re-create the constraints with the right actions.
+--     Constraint names are looked up rather than assumed.
+-- ---------------------------------------------------------------------------
+do $$
+declare r record;
+begin
+  for r in
+    select con.conname, con.conrelid::regclass as tbl,
+           att.attname as col, cl.relname as ref
+      from pg_constraint con
+      join pg_class cl on cl.oid = con.confrelid
+      join unnest(con.conkey) with ordinality k(attnum, ord) on true
+      join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k.attnum
+     where con.contype = 'f'
+       and con.confdeltype = 'a'                       -- 'a' = NO ACTION
+       -- to_regclass (not ::regclass) so this is a no-op on a clean database
+       -- where these tables don't exist yet; a missing name yields NULL and
+       -- simply matches nothing instead of raising.
+       and con.conrelid in (to_regclass('public.mh_stock_sync_log'),
+                            to_regclass('public.mh_item_map'))
+  loop
+    execute format('alter table %s drop constraint %I', r.tbl, r.conname);
+    if r.tbl::text = 'mh_item_map' then
+      execute format(
+        'alter table public.mh_item_map add constraint %I foreign key (%I) references public.%I(id) on delete cascade',
+        r.conname, r.col, r.ref);
+    else
+      execute format(
+        'alter table public.mh_stock_sync_log add constraint %I foreign key (%I) references public.%I(id) on delete set null',
+        r.conname, r.col, r.ref);
+    end if;
+    raise notice 'repaired FK % on % (%)', r.conname, r.tbl, r.col;
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- 1. Which categories deduct stock.
 --
 --    NOTE: mh_categories cannot hold this flag. It is not a row-per-category
@@ -85,7 +127,8 @@ create table if not exists public.mh_item_map (
   id                bigserial primary key,
   menu_name         text        not null,
   menu_name_norm    text        generated always as (public.mh_norm(menu_name)) stored,
-  inventory_item_id uuid        not null references public.mh_inventory_items(id),
+  -- CASCADE: a mapping is meaningless once its inventory item is gone.
+  inventory_item_id uuid        not null references public.mh_inventory_items(id) on delete cascade,
   qty_per_unit      numeric     not null default 1 check (qty_per_unit > 0),
   active            boolean     not null default true,
   created_by        text,
@@ -110,10 +153,12 @@ create table if not exists public.mh_stock_sync_log (
   bill_id           text        not null,
   menu_name         text        not null,
   menu_name_norm    text        not null,
-  inventory_item_id uuid        references public.mh_inventory_items(id),
+  inventory_item_id uuid        references public.mh_inventory_items(id) on delete set null,
   bill_qty          numeric     not null,
   qty_deducted      numeric     not null,
-  move_id           uuid        references public.mh_stock_moves(id),
+  -- ON DELETE SET NULL: this log is an audit trail and must outlive the move it
+  -- points at. Without it the FK blocks any delete from mh_stock_moves.
+  move_id           uuid        references public.mh_stock_moves(id) on delete set null,
   status            text        not null,   -- 'applied' | 'unmapped'
   created_at        timestamptz not null default now()
 );

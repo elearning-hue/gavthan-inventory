@@ -281,3 +281,25 @@ STATUS: TODO / DONE / SKIP (web-only, no android need)
 2. RLS policies untested against android app's actual query patterns —
    verify android's Supabase calls don't rely on any permissive-write
    behavior these policies would now block.
+
+## Foreign keys — ON DELETE actions (shared DB, affects android too)
+
+- [TODO] `mh_stock_sync_log` FKs must not pin down the rows they reference.
+  Created without an ON DELETE action, Postgres defaults to NO ACTION, and
+  `mh_stock_sync_log.move_id -> mh_stock_moves(id)` then blocks **every**
+  delete from `mh_stock_moves`:
+  ```
+  ERROR: 23503: update or delete on table "mh_stock_moves" violates
+         foreign key constraint on table "mh_stock_sync_log"
+  ```
+  The log is an audit trail — it must outlive what it points at. Correct
+  actions, now in `supabase-stock-sync.sql` plus a lookup-based repair block
+  for databases where the constraints already exist:
+  | constraint | action | why |
+  |---|---|---|
+  | `mh_stock_sync_log.move_id -> mh_stock_moves` | `ON DELETE SET NULL` | keep the audit row, drop the pointer |
+  | `mh_stock_sync_log.inventory_item_id -> mh_inventory_items` | `ON DELETE SET NULL` | same |
+  | `mh_item_map.inventory_item_id -> mh_inventory_items` | `ON DELETE CASCADE` | column is NOT NULL; a mapping is meaningless without its item |
+
+  Android side: nothing to code, but if it ever deletes stock moves or
+  inventory items it will hit the same 23503 until the repair block is run.
