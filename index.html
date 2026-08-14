@@ -123,8 +123,11 @@
   .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* ── Topbar — highest z-plane, thicker glass ── */
+  /* Header + module tabs freeze together as one block, so the Ledger /
+     Inventory switch stays reachable while a long list scrolls under it. */
+  .stickytop{position:sticky;top:0;z-index:30;background:var(--surface)}
   .topbar{
-    position:sticky;top:0;z-index:30;
+    position:relative;z-index:1;
     background:var(--glass);
     backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
     border-bottom:1px solid var(--line);
@@ -155,7 +158,7 @@
   .theme-toggle{border-radius:50%}
 
   /* ── Module tabs — segmented control, soft active ── */
-  .modtabs{display:flex;gap:4px;padding:12px 16px 0;background:transparent}
+  .modtabs{display:flex;gap:4px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--line)}
   .modtab{
     flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
     border:1px solid transparent;background:transparent;
@@ -495,6 +498,7 @@
       border-radius:16px;
       box-shadow:0 0 0 1px var(--line),var(--shadow-lg);
     }
+    .stickytop{border-radius:16px 16px 0 0}
     .topbar{border-radius:16px 16px 0 0}
     .stat .v{font-size:23px}
   }
@@ -994,14 +998,16 @@
       return html`<div class="login"><h1>Account disabled</h1><p class="sub">Ask an admin to re-enable your login.</p><button class="btn sec" onClick=${()=>sb.auth.signOut()}>Sign out</button></div>`;
 
     return html`
+      <div class="stickytop">
       <${Header} me=${me} module=${module} />
-      ${!online && html`<div class="wrap" style=${{paddingBottom:0}}><div class="banner net">⚠ Offline — changes will fail until reconnected.</div></div>`}
       <div class="modtabs" role="tablist">
         <div class=${"modtab"+(module==="ledger"?" on":"")} aria-pressed=${module==="ledger"} ...${clickable(()=>setModule("ledger"))}>
           <${Icon} name="book"/>Ledger</div>
         <div class=${"modtab"+(module==="inventory"?" on":"")} aria-pressed=${module==="inventory"} ...${clickable(()=>setModule("inventory"))}>
           <${Icon} name="package"/>Inventory</div>
       </div>
+      </div>
+      ${!online && html`<div class="wrap" style=${{paddingBottom:0}}><div class="banner net">⚠ Offline — changes will fail until reconnected.</div></div>`}
       ${module==="ledger" ? html`<${Ledger} me=${me} online=${online}/>` : html`<${Inventory} me=${me} online=${online}/>`}
       ${toastEl}
     `;
