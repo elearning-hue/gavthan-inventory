@@ -566,7 +566,14 @@
     supabaseUrl:     "https://glaksnwcmiijiztsncvi.supabase.co",
     supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsYWtzbndjbWlpaml6dHNuY3ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTU2MjIsImV4cCI6MjA5NDA3MTYyMn0.IEAWtwrjCYFV1QuHRwri0qvBGXCfPdB6ni998DSFjgo",
     hotelName:       "Gavthan",
-    currency:        "\u20B9"                              // ₹
+    currency:        "\u20B9",                             // ₹
+    // OPTIONAL - Google Drive backup. Leave empty and backups still work as
+    // downloaded files; fill it in to also push/pull from Drive.
+    // Get one from console.cloud.google.com: create an OAuth 2.0 Client ID of
+    // type "Web application", enable the Google Drive API, and add this app's
+    // origin to Authorised JavaScript origins. Only the drive.file scope is
+    // requested, so the app can only see files it created itself.
+    googleClientId:  ""
   };
 </script>
 
@@ -590,6 +597,10 @@
 <script src="https://cdn.jsdelivr.net/npm/htm@3/dist/htm.umd.js" onerror="__libFail('htm')"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="__libFail('supabase-js')"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Google Identity Services - only used for the optional Drive backup.
+     Deliberately NOT routed through __libFail: if it is blocked the app must
+     still start, and backups simply fall back to downloaded files. -->
+<script src="https://accounts.google.com/gsi/client" async defer onerror="window.__gisFailed=true"></script>
 <!-- Recharts (UMD) for dashboard charts — depends on the React globals above.
      OPTIONAL: failures are intentionally NOT routed through __libFail so they never
      block app start; the dashboards detect a missing Recharts and degrade gracefully. -->
@@ -1942,6 +1953,25 @@
     // silently throwing away the older pages the user already paged into.
     const [mvLimit,setMvLimit]=useState(MOVES_CHUNK);
     const [sync,setSync]=useState(false);
+    const [backup,setBackup]=useState(false);
+    const [bkNote,setBkNote]=useState("");
+    // A scheduled backup can only fire while the app is open. On first
+    // load, if one is due and Drive is configured, take it quietly;
+    // otherwise just surface that one is overdue.
+    useEffect(()=>{
+      if(!isAdmin || !backupDue()) return;
+      let cancelled=false;
+      (async()=>{
+        if(!gdConfigured()){ if(!cancelled) setBkNote("A scheduled backup is due."); return; }
+        try{
+          const b=await buildBackup(); const name=backupFilename();
+          await gdUpload(b,name);
+          bkSavePrefs({...bkPrefs(), lastAt:new Date().toISOString(), lastName:name, lastWhere:"drive"});
+          if(!cancelled){ setBkNote(""); toast("Scheduled backup saved to Drive"); }
+        }catch(e){ if(!cancelled) setBkNote("Scheduled backup failed: "+(e.message||"unknown error")); }
+      })();
+      return ()=>{ cancelled=true; };
+    },[isAdmin]);
     const [syncCounts,setSyncCounts]=useState({pending:0,unmapped:0});
     const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
     const isAdmin = !!(me && me.role==="admin");
@@ -2074,6 +2104,18 @@
           </div>`)}
       </div>
 
+      ${isAdmin && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Backup</h3>
+        <button class="btn ghost sm" onClick=${()=>setBackup(true)}>Open</button></div>
+        <div class="pad" style=${{paddingTop:0}}>
+          <div class="tiny muted">Cashbook, on-hand stock, movements and sync setup, saved as one file or to Google Drive.</div>
+          <div class="row" style=${{gap:8,marginTop:8}}>
+            <span class=${"pill"+(bkPrefs().lastAt?" ok":" low")}>${bkPrefs().lastAt?("last "+fmtDate(bkPrefs().lastAt)):"never backed up"}</span>
+            <span class="pill">${(bkPrefs().freq||"off")==="off"?"automatic off":("auto "+bkPrefs().freq)}</span>
+          </div>
+          ${bkNote && html`<div class="banner net" style=${{marginTop:8}}>${bkNote}</div>`}
+        </div>
+      </div>`}
+
       ${isAdmin && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Stock sync</h3>
         <button class="btn ghost sm" onClick=${()=>{setSync(true);}}>Open</button></div>
         <div class="pad" style=${{paddingTop:0}}>
@@ -2118,6 +2160,7 @@
       </${Sheet}>`}
     ${sync && html`<${StockSyncSheet} items=${items} me=${me}
         onClose=${()=>setSync(false)} onChanged=${()=>{load();loadSyncCounts();}}/>`}
+    ${backup && html`<${BackupSheet} onClose=${()=>{setBackup(false);load();}}/>`}
     `;
   }
 
@@ -2240,6 +2283,142 @@
     </${Sheet}>`;
   }
 
+  /* ---------- backup / restore ---------- */
+  function BackupSheet({onClose}){
+    const [prefs,setPrefs]=useState(bkPrefs());
+    const [busy,setBusy]=useState("");
+    const [progress,setProgress]=useState("");
+    const [report,setReport]=useState(null);
+    const [pending,setPending]=useState(null);   // parsed backup awaiting confirmation
+    const [drive,setDrive]=useState([]);
+    const [err,setErr]=useState("");
+    const fileRef=useRef(null);
+
+    function savePrefs(next){ const merged={...prefs,...next}; setPrefs(merged); bkSavePrefs(merged); }
+
+    async function runBackup(toDrive){
+      setBusy("backup"); setErr(""); setReport(null);
+      try{
+        const b=await buildBackup();
+        const name=backupFilename();
+        const bad=BACKUP_TABLES.filter(t=> b.tables[t] && b.tables[t].__error);
+        if(toDrive){ await gdUpload(b,name); toast("Backed up to Drive: "+name); }
+        else { downloadJson(b,name); toast("Backup downloaded"); }
+        savePrefs({ lastAt:new Date().toISOString(), lastName:name, lastWhere:toDrive?"drive":"file" });
+        if(bad.length) setErr("Saved, but these tables could not be read: "+bad.join(", "));
+      }catch(e){ setErr(e.message||"Backup failed"); }
+      setBusy("");
+    }
+
+    async function loadDrive(){
+      setBusy("list"); setErr("");
+      try{ setDrive(await gdList()); }
+      catch(e){ setErr(e.message||"Couldn't list Drive backups"); }
+      setBusy("");
+    }
+
+    function onFile(ev){
+      const f=ev.target.files && ev.target.files[0]; if(!f) return;
+      setErr("");
+      const fr=new FileReader();
+      fr.onload=()=>{ try{ const j=JSON.parse(fr.result); stage(j,f.name); }
+                      catch(e){ setErr("That file isn't valid JSON"); } };
+      fr.readAsText(f);
+    }
+
+    function stage(j,label){
+      if(!j || j.app!=="gavthan-manager" || !j.tables){ setErr("Not a Gavthan backup file"); return; }
+      setPending({ data:j, label:label||"backup" });
+    }
+
+    async function pickDrive(f){
+      setBusy(f.id); setErr("");
+      try{ stage(await gdDownload(f.id), f.name); }
+      catch(e){ setErr(e.message||"Couldn't fetch that backup"); }
+      setBusy("");
+    }
+
+    async function doRestore(){
+      const b=pending; if(!b) return;
+      const c=bkCounts(b.data);
+      const total=Object.keys(c).reduce((n,k)=> n+(c[k]||0),0);
+      if(!confirm("Restore "+total+" rows from "+b.label+"?\n\nExisting rows with the same id are overwritten with the backup's version. Nothing is deleted. This cannot be undone.")) return;
+      setBusy("restore"); setErr(""); setReport(null);
+      try{
+        const rep=await restoreBackup(b.data,(t,done,all)=> setProgress(t+" "+done+"/"+all));
+        setReport(rep); setPending(null); setProgress("");
+        const failed=rep.reduce((n,r)=> n+(r.failed||0),0);
+        if(failed) toastErr(failed+" rows failed - see the report"); else toast("Restore complete");
+      }catch(e){ setErr(e.message||"Restore failed"); }
+      setBusy("");
+    }
+
+    const counts=pending?bkCounts(pending.data):null;
+    const freq=prefs.freq||"off";
+
+    return html`<${Sheet} onClose=${onClose} title="Backup & restore">
+      ${err && html`<div class="banner">${err}</div>`}
+
+      <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
+        Covers the cashbook, on-hand stock, every stock movement, and the sync
+        setup (mappings + armed categories). Bills stay in the billing app.
+        ${prefs.lastAt?html`<br/><span class="tiny muted">Last backup ${fmtDT(prefs.lastAt)}${prefs.lastWhere==="drive"?" to Drive":" as a file"}</span>`
+                      :html`<br/><span class="tiny muted">No backup taken yet.</span>`}
+      </div>
+
+      <label>Back up now</label>
+      <button class="btn" disabled=${!!busy} onClick=${()=>runBackup(false)}>
+        ${busy==="backup"?"Working…":"Download backup file"}</button>
+      <button class="btn sec" style=${{marginTop:8}} disabled=${!!busy||!gdConfigured()}
+        onClick=${()=>runBackup(true)}>Back up to Google Drive</button>
+      ${!gdConfigured() && html`<p class="tiny muted" style=${{margin:"6px 2px 0"}}>
+        Drive is off until <code>googleClientId</code> is set in the GH_CONFIG block of index.html. Downloads work regardless.</p>`}
+
+      <label>Automatic backup</label>
+      <div class="seg">
+        ${[["off","Off"],["daily","Daily"],["weekly","Weekly"],["monthly","Monthly"]].map(o=>
+          html`<button key=${o[0]} class=${freq===o[0]?"on":""} onClick=${()=>savePrefs({freq:o[0]})}>${o[1]}</button>`)}
+      </div>
+      <p class="tiny muted" style=${{margin:"6px 2px 0"}}>
+        Runs when the app is opened and one is due — a web page can't run while it's closed.
+        ${gdConfigured()?" Due backups go to Drive.":" Set a googleClientId first, or a due backup has nowhere to go unattended."}
+        For backups that fire with nobody present, schedule it server-side (Supabase pg_cron + an Edge Function).
+      </p>
+
+      <label>Restore</label>
+      <input type="file" accept="application/json,.json" ref=${fileRef} onChange=${onFile}/>
+      ${gdConfigured() && html`<div>
+        <button class="btn ghost sm" style=${{width:"100%",marginTop:8}} disabled=${!!busy}
+          onClick=${loadDrive}>${busy==="list"?"Loading…":"List Drive backups"}</button>
+        ${drive.map(f=> html`<div class="entry" key=${f.id}>
+          <div class="grow"><div><b class="ell">${f.name}</b></div>
+            <div class="tiny muted">${fmtDT(f.createdTime)}</div></div>
+          <button class="btn ghost sm" disabled=${!!busy} onClick=${()=>pickDrive(f)}>${busy===f.id?"…":"Use"}</button>
+        </div>`)}
+      </div>`}
+
+      ${pending && html`<div class="card" style=${{marginTop:12}}><div class="pad">
+        <b>${pending.label}</b>
+        <div class="tiny muted" style=${{margin:"2px 0 8px"}}>Taken ${fmtDT(pending.data.created_at)}</div>
+        ${BACKUP_TABLES.map(t=> html`<div class="between tiny" key=${t} style=${{padding:"2px 0"}}>
+          <span class="muted">${t.replace("mh_","")}</span><b>${counts[t]==null?"—":counts[t]}</b></div>`)}
+        <div class="banner net" style=${{marginTop:10}}>
+          Rows with a matching id are overwritten by the backup's version. Nothing is deleted, so anything created since the backup survives.
+        </div>
+        <button class="btn danger" style=${{marginTop:10}} disabled=${!!busy}
+          onClick=${doRestore}>${busy==="restore"?("Restoring… "+progress):"Restore this backup"}</button>
+      </div></div>`}
+
+      ${report && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Restore report</h3></div>
+        ${report.map(r=> html`<div class="entry" key=${r.table}>
+          <span class=${"dot "+(r.failed?"d":"c")}></span>
+          <div class="grow"><div><b>${r.table.replace("mh_","")}</b></div>
+            <div class="tiny muted">${r.skipped?"nothing in backup":(r.restored+" restored"+(r.failed?(", "+r.failed+" failed: "+r.error):""))}</div></div>
+        </div>`)}
+      </div>`}
+    </${Sheet}>`;
+  }
+
   /* ---------- generic bottom sheet ---------- */
   /* ---- Admin: bill → stock sync (pending bills, item mapping, armed categories) ----
      Every corrective action for the cross-app sync lives here so none of it
@@ -2247,6 +2426,146 @@
      this sheet reads, it never writes. ---- */
   // Fallback only — used when mh_categories can't be read (missing table / RLS).
   // The real list is fetched from mh_categories; nothing here is authoritative.
+  /* =====================================================================
+     BACKUP / RESTORE
+     Snapshot of everything this app owns: the cashbook, on-hand stock, the
+     movement trail, and the sync configuration, written as one JSON document.
+
+     Destinations: a downloaded file always works. Google Drive is used as well
+     when CFG.googleClientId is set - the token is obtained in the browser via
+     Google Identity Services with the drive.file scope, which limits the app
+     to files it created itself.
+
+     Scheduling caveat: a static page cannot run while it is closed, so
+     "daily / weekly / monthly" means "run on next open if one is due", not an
+     unattended cron. Genuinely unattended backups need a server-side job
+     (Supabase pg_cron plus an Edge Function).
+     ===================================================================== */
+  const BACKUP_TABLES=["mh_ledger","mh_inventory_items","mh_stock_moves",
+                       "mh_item_map","mh_stock_categories","mh_stock_sync_log"];
+  const BACKUP_VERSION=1;
+  const BK_PREFS="gh-backup-prefs";
+
+  const bkPrefs=()=>{ try{ return JSON.parse(localStorage.getItem(BK_PREFS)||"{}")||{}; }catch(e){ return {}; } };
+  const bkSavePrefs=(o)=>{ try{ localStorage.setItem(BK_PREFS,JSON.stringify(o)); }catch(e){} };
+
+  // Supabase caps a plain select at 1000 rows, so page explicitly or a large
+  // ledger silently backs up only its first thousand entries.
+  async function fetchAllRows(table){
+    const out=[]; const step=1000;
+    for(let from=0;;from+=step){
+      const { data, error } = await sb.from(table).select("*").range(from,from+step-1);
+      if(error) throw new Error(table+": "+error.message);
+      out.push.apply(out,data||[]);
+      if(!data || data.length<step) break;
+    }
+    return out;
+  }
+
+  async function buildBackup(){
+    const tables={};
+    for(const t of BACKUP_TABLES){
+      // One unreadable table must not lose the whole backup - record the gap
+      // and carry on, so the operator still gets everything else.
+      try{ tables[t]=await fetchAllRows(t); }
+      catch(e){ tables[t]={ __error:String(e.message||e) }; }
+    }
+    return { app:"gavthan-manager", version:BACKUP_VERSION,
+             created_at:new Date().toISOString(), hotel:CFG.hotelName||"", tables };
+  }
+
+  const backupFilename=()=>{
+    const d=new Date(), p2=(n)=>String(n).padStart(2,"0");
+    return "gavthan-backup-"+localISO(d)+"-"+p2(d.getHours())+p2(d.getMinutes())+".json";
+  };
+
+  function downloadJson(obj,name){
+    const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url; a.download=name; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },150);
+  }
+
+  const bkCounts=(b)=>{ const c={}; BACKUP_TABLES.forEach(t=>{ const v=b&&b.tables&&b.tables[t]; c[t]=Array.isArray(v)?v.length:null; }); return c; };
+
+  /* ---- restore ----
+     Upsert by primary key rather than wipe-and-insert. A restore is meant to
+     put back what was lost, not delete what has happened since, and a wipe
+     interrupted half way would be unrecoverable. Existing rows are refreshed,
+     missing rows come back, nothing is ever deleted. */
+  async function restoreBackup(b,onProgress){
+    if(!b || !b.tables) throw new Error("Not a Gavthan backup file");
+    const report=[];
+    for(const t of BACKUP_TABLES){
+      const rows=b.tables[t];
+      if(!Array.isArray(rows) || !rows.length){ report.push({table:t,restored:0,failed:0,skipped:true}); continue; }
+      const conflict = t==="mh_stock_categories" ? "name_norm" : "id";
+      let done=0, failed=0, lastErr="";
+      for(let i=0;i<rows.length;i+=200){
+        const chunk=rows.slice(i,i+200);
+        const { error } = await sb.from(t).upsert(chunk,{onConflict:conflict});
+        if(error){ failed+=chunk.length; lastErr=error.message; } else done+=chunk.length;
+        onProgress && onProgress(t,done+failed,rows.length);
+      }
+      report.push({table:t,restored:done,failed:failed,error:lastErr});
+    }
+    return report;
+  }
+
+  /* ---- Google Drive (optional) ---- */
+  let gdToken=null, gdTokenAt=0;
+  function gdConfigured(){ return !!CFG.googleClientId; }
+  function gdReady(){ return !!(CFG.googleClientId && window.google && google.accounts && google.accounts.oauth2); }
+  function gdAuth(){
+    return new Promise((resolve,reject)=>{
+      if(!CFG.googleClientId) return reject(new Error("No googleClientId set in GH_CONFIG"));
+      if(!gdReady()) return reject(new Error("Google sign-in script did not load"));
+      if(gdToken && Date.now()-gdTokenAt < 50*60*1000) return resolve(gdToken);
+      const tc=google.accounts.oauth2.initTokenClient({
+        client_id:CFG.googleClientId,
+        scope:"https://www.googleapis.com/auth/drive.file",
+        callback:(r)=>{ if(r && r.access_token){ gdToken=r.access_token; gdTokenAt=Date.now(); resolve(gdToken); }
+                        else reject(new Error(r&&r.error?r.error:"Drive authorisation refused")); }
+      });
+      tc.requestAccessToken();
+    });
+  }
+  async function gdUpload(obj,name){
+    const token=await gdAuth();
+    const meta={ name:name, mimeType:"application/json", description:"Gavthan Manager backup" };
+    const body=new FormData();
+    body.append("metadata",new Blob([JSON.stringify(meta)],{type:"application/json"}));
+    body.append("file",new Blob([JSON.stringify(obj)],{type:"application/json"}));
+    const r=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
+      { method:"POST", headers:{ Authorization:"Bearer "+token }, body:body });
+    if(!r.ok) throw new Error("Drive upload failed ("+r.status+")");
+    return r.json();
+  }
+  async function gdList(){
+    const token=await gdAuth();
+    const q=encodeURIComponent("name contains 'gavthan-backup-' and trashed=false");
+    const r=await fetch("https://www.googleapis.com/drive/v3/files?q="+q+"&orderBy=createdTime desc&pageSize=25&fields=files(id,name,createdTime,size)",
+      { headers:{ Authorization:"Bearer "+token } });
+    if(!r.ok) throw new Error("Drive list failed ("+r.status+")");
+    return (await r.json()).files||[];
+  }
+  async function gdDownload(id){
+    const token=await gdAuth();
+    const r=await fetch("https://www.googleapis.com/drive/v3/files/"+id+"?alt=media",
+      { headers:{ Authorization:"Bearer "+token } });
+    if(!r.ok) throw new Error("Drive download failed ("+r.status+")");
+    return r.json();
+  }
+
+  /* ---- schedule ---- */
+  const BK_EVERY={ off:0, daily:1, weekly:7, monthly:30 };
+  function backupDue(){
+    const p=bkPrefs(), days=BK_EVERY[p.freq||"off"]||0;
+    if(!days) return false;
+    if(!p.lastAt) return true;
+    return (Date.now()-new Date(p.lastAt).getTime()) >= days*86400000;
+  }
+
   const SYNC_CATS_FALLBACK=["starter","cold drinks","water bottle","cigarette"];
   // Must match the DB's mh_norm(): lowercase, trim, collapse inner whitespace.
   const normName=(s)=> String(s==null?"":s).toLowerCase().trim().replace(/\s+/g," ");
