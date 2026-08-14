@@ -573,7 +573,7 @@
     // type "Web application", enable the Google Drive API, and add this app's
     // origin to Authorised JavaScript origins. Only the drive.file scope is
     // requested, so the app can only see files it created itself.
-    googleClientId:  ""
+    googleClientId:  "968629668475-rmn22dhsuot4cshtntk3i7vjgsonjuuu.apps.googleusercontent.com"
   };
 </script>
 
@@ -1955,6 +1955,13 @@
     const [sync,setSync]=useState(false);
     const [backup,setBackup]=useState(false);
     const [bkNote,setBkNote]=useState("");
+    const [syncCounts,setSyncCounts]=useState({pending:0,unmapped:0});
+    const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
+    const isAdmin = !!(me && me.role==="admin");
+
+    // NOTE: this must stay BELOW the isAdmin declaration above. `const` is in
+    // the temporal dead zone until its line runs, so reading isAdmin from an
+    // effect declared earlier throws during render and blanks the whole tab.
     // A scheduled backup can only fire while the app is open. On first
     // load, if one is due and Drive is configured, take it quietly;
     // otherwise just surface that one is overdue.
@@ -1972,9 +1979,6 @@
       })();
       return ()=>{ cancelled=true; };
     },[isAdmin]);
-    const [syncCounts,setSyncCounts]=useState({pending:0,unmapped:0});
-    const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
-    const isAdmin = !!(me && me.role==="admin");
 
     const load=useCallback(async()=>{
       // First load shows the spinner; realtime refreshes must not, or an open
