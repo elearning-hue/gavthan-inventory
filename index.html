@@ -532,6 +532,15 @@
   /* Bigger tap area for the settle toggle */
   .setbtn{min-height:40px}
 
+  /* Backup sheet action buttons — colour carries the meaning here, so each
+     also keeps its icon + label for anyone who can't separate the hues. */
+  .btn.bk-go{background:var(--green-bg);color:var(--credit);border-color:var(--green-border)}
+  .btn.bk-go:hover{background:var(--accent-tint-2)}
+  .btn.bk-list{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-border)}
+  .btn.bk-list:hover{filter:brightness(.97)}
+  .btn.bk-del{background:var(--red-bg);color:var(--debit);border-color:var(--red-border)}
+  .btn.bk-del:hover{filter:brightness(.97)}
+
   /* Settle-status filter (ledger header): tinted when active */
   .settlebtn.un{color:var(--debit);border-color:var(--red-border);background:var(--red-bg)}
   .settlebtn.yes{color:var(--accent-ink);border-color:var(--accent-tint-2);background:var(--accent-tint)}
@@ -700,6 +709,9 @@
     folder:'<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     trend:'<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/>',
     pencil:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    cloud:'<path d="M17.5 19a4.5 4.5 0 0 0 0-9h-1.8A7 7 0 1 0 4 16.9"/><path d="M12 12v9"/><path d="m8 17 4-4 4 4"/>',
+    trash:'<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+    link:'<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
     languages:'<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>'
   };
   function Icon({name,size=18,cls=""}){
@@ -976,6 +988,7 @@
     const [session,setSession]=useState(null);
     const [me,setMe]=useState(null);
     const [module,setModule]=useState("ledger");
+    const [backup,setBackup]=useState(false);
     const [online,setOnline]=useState(navigator.onLine);
     const toastEl=useToast();
 
@@ -1003,6 +1016,22 @@
       })();
     },[session]);
 
+    // Scheduled backup can only fire while the app is open, so check on load.
+    // Lives here rather than in a tab so it runs whichever module is showing.
+    useEffect(()=>{
+      if(!me || me.role!=="admin" || !backupDue() || !gdConfigured()) return;
+      let cancelled=false;
+      (async()=>{
+        try{
+          const b=await buildBackup(), name=backupFilename();
+          await gdUpload(b,name);
+          bkSavePrefs({...bkPrefs(), lastAt:new Date().toISOString(), lastName:name, lastWhere:"drive"});
+          if(!cancelled) toast("Scheduled backup saved to Drive");
+        }catch(e){ /* silent: a failed auto-backup must not nag on every load */ }
+      })();
+      return ()=>{ cancelled=true; };
+    },[me]);
+
     if(boot) return html`<div class="login"><img class="crest" src="favicon.svg" alt="" style=${{margin:"0 auto 20px"}}/><p class="sub">Loading…</p></div>`;
     if(!session) return html`<${Login} />${toastEl}`;
     if(me && me.active===false)
@@ -1010,7 +1039,7 @@
 
     return html`
       <div class="stickytop">
-      <${Header} me=${me} module=${module} />
+      <${Header} me=${me} module=${module} onBackup=${()=>setBackup(true)} />
       <div class="modtabs" role="tablist">
         <div class=${"modtab"+(module==="ledger"?" on":"")} aria-pressed=${module==="ledger"} ...${clickable(()=>setModule("ledger"))}>
           <${Icon} name="book"/>Ledger</div>
@@ -1020,11 +1049,12 @@
       </div>
       ${!online && html`<div class="wrap" style=${{paddingBottom:0}}><div class="banner net">⚠ Offline — changes will fail until reconnected.</div></div>`}
       ${module==="ledger" ? html`<${Ledger} me=${me} online=${online}/>` : html`<${Inventory} me=${me} online=${online}/>`}
+      ${backup && html`<${BackupSheet} onClose=${()=>setBackup(false)}/>`}
       ${toastEl}
     `;
   }
 
-  function Header({me,module}){
+  function Header({me,module,onBackup}){
     const [theme,setTheme]=useState(getTheme());
     const [lang,setLang]=useState(getLang());
     function toggle(){ const n=theme==="dark"?"light":"dark"; setTheme(n); applyTheme(n); }
@@ -1037,6 +1067,8 @@
         <span>${module==="ledger"?"Receivables & Payables":"Inventory control"}</span></div>
       <div class="row" style=${{marginLeft:"auto",gap:8}}>
         <div id="gt_widget" aria-hidden="true"></div>
+        ${me && me.role==="admin" && html`<button class="theme-toggle notranslate" aria-label="Backup and restore"
+          title="Backup & restore" onClick=${onBackup}><${Icon} name="cloud"/></button>`}
         <button class=${"theme-toggle notranslate"+(lang==="mr"?" on":"")} aria-label=${lang==="mr"?"Switch to English":"Translate to Marathi"} title=${lang==="mr"?"English":"मराठी"} onClick=${toggleLang}><${Icon} name="languages"/></button>
         <button class="theme-toggle" aria-label=${"Switch to "+(theme==="dark"?"light":"dark")+" mode"} title=${"Switch to "+(theme==="dark"?"light":"dark")+" mode"} onClick=${toggle}><${Icon} name=${theme==="dark"?"sun":"moon"}/></button>
         <button class="iconbtn" aria-label="Sign out" title=${"Sign out ("+(me?me.email:"")+")"} onClick=${()=>{ if(confirm("Sign out?")) sb.auth.signOut(); }}><${Icon} name="logout"/></button>
@@ -1953,32 +1985,10 @@
     // silently throwing away the older pages the user already paged into.
     const [mvLimit,setMvLimit]=useState(MOVES_CHUNK);
     const [sync,setSync]=useState(false);
-    const [backup,setBackup]=useState(false);
-    const [bkNote,setBkNote]=useState("");
     const [syncCounts,setSyncCounts]=useState({pending:0,unmapped:0});
     const loadedOnce=useRef(false);   // gate the full-screen spinner to the FIRST load only
     const isAdmin = !!(me && me.role==="admin");
 
-    // NOTE: this must stay BELOW the isAdmin declaration above. `const` is in
-    // the temporal dead zone until its line runs, so reading isAdmin from an
-    // effect declared earlier throws during render and blanks the whole tab.
-    // A scheduled backup can only fire while the app is open. On first
-    // load, if one is due and Drive is configured, take it quietly;
-    // otherwise just surface that one is overdue.
-    useEffect(()=>{
-      if(!isAdmin || !backupDue()) return;
-      let cancelled=false;
-      (async()=>{
-        if(!gdConfigured()){ if(!cancelled) setBkNote("A scheduled backup is due."); return; }
-        try{
-          const b=await buildBackup(); const name=backupFilename();
-          await gdUpload(b,name);
-          bkSavePrefs({...bkPrefs(), lastAt:new Date().toISOString(), lastName:name, lastWhere:"drive"});
-          if(!cancelled){ setBkNote(""); toast("Scheduled backup saved to Drive"); }
-        }catch(e){ if(!cancelled) setBkNote("Scheduled backup failed: "+(e.message||"unknown error")); }
-      })();
-      return ()=>{ cancelled=true; };
-    },[isAdmin]);
 
     const load=useCallback(async()=>{
       // First load shows the spinner; realtime refreshes must not, or an open
@@ -2108,18 +2118,6 @@
           </div>`)}
       </div>
 
-      ${isAdmin && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Backup</h3>
-        <button class="btn ghost sm" onClick=${()=>setBackup(true)}>Open</button></div>
-        <div class="pad" style=${{paddingTop:0}}>
-          <div class="tiny muted">Cashbook, on-hand stock, movements and sync setup, saved as one file or to Google Drive.</div>
-          <div class="row" style=${{gap:8,marginTop:8}}>
-            <span class=${"pill"+(bkPrefs().lastAt?" ok":" low")}>${bkPrefs().lastAt?("last "+fmtDate(bkPrefs().lastAt)):"never backed up"}</span>
-            <span class="pill">${(bkPrefs().freq||"off")==="off"?"automatic off":("auto "+bkPrefs().freq)}</span>
-          </div>
-          ${bkNote && html`<div class="banner net" style=${{marginTop:8}}>${bkNote}</div>`}
-        </div>
-      </div>`}
-
       ${isAdmin && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Stock sync</h3>
         <button class="btn ghost sm" onClick=${()=>{setSync(true);}}>Open</button></div>
         <div class="pad" style=${{paddingTop:0}}>
@@ -2164,7 +2162,6 @@
       </${Sheet}>`}
     ${sync && html`<${StockSyncSheet} items=${items} me=${me}
         onClose=${()=>setSync(false)} onChanged=${()=>{load();loadSyncCounts();}}/>`}
-    ${backup && html`<${BackupSheet} onClose=${()=>{setBackup(false);load();}}/>`}
     `;
   }
 
@@ -2294,30 +2291,64 @@
     const [progress,setProgress]=useState("");
     const [report,setReport]=useState(null);
     const [pending,setPending]=useState(null);   // parsed backup awaiting confirmation
-    const [drive,setDrive]=useState([]);
+    const [drive,setDrive]=useState(null);       // null = not listed yet
     const [err,setErr]=useState("");
-    const fileRef=useRef(null);
 
-    function savePrefs(next){ const merged={...prefs,...next}; setPrefs(merged); bkSavePrefs(merged); }
+    const connected = prefs.connected && gdConfigured();
+    function savePrefs(next){ const merged={...bkPrefs(),...next}; setPrefs(merged); bkSavePrefs(merged); }
+
+    async function connect(){
+      setBusy("connect"); setErr("");
+      try{ await gdAuth(); setPrefs(bkPrefs()); toast("Google Drive connected"); }
+      catch(e){ setErr(e.message||"Couldn't connect"); }
+      setBusy("");
+    }
+    async function disconnect(){
+      if(!confirm("Disconnect Google Drive? Backups already in Drive are left alone.")) return;
+      setBusy("connect");
+      await gdRevoke(); setPrefs(bkPrefs()); setDrive(null); toast("Disconnected");
+      setBusy("");
+    }
 
     async function runBackup(toDrive){
       setBusy("backup"); setErr(""); setReport(null);
       try{
-        const b=await buildBackup();
-        const name=backupFilename();
+        const b=await buildBackup(), name=backupFilename();
         const bad=BACKUP_TABLES.filter(t=> b.tables[t] && b.tables[t].__error);
-        if(toDrive){ await gdUpload(b,name); toast("Backed up to Drive: "+name); }
+        if(toDrive){ await gdUpload(b,name); toast("Backed up to Drive"); }
         else { downloadJson(b,name); toast("Backup downloaded"); }
         savePrefs({ lastAt:new Date().toISOString(), lastName:name, lastWhere:toDrive?"drive":"file" });
-        if(bad.length) setErr("Saved, but these tables could not be read: "+bad.join(", "));
+        if(drive) await loadDrive(true);
+        if(bad.length) setErr("Saved, but these tables couldn't be read: "+bad.join(", "));
       }catch(e){ setErr(e.message||"Backup failed"); }
       setBusy("");
     }
 
-    async function loadDrive(){
-      setBusy("list"); setErr("");
+    async function loadDrive(quiet){
+      if(!quiet) setBusy("list");
+      setErr("");
       try{ setDrive(await gdList()); }
       catch(e){ setErr(e.message||"Couldn't list Drive backups"); }
+      if(!quiet) setBusy("");
+    }
+
+    async function deleteAll(){
+      const list = drive || await gdList().catch(()=>[]);
+      if(!list.length){ toast("No backups in Drive"); return; }
+      if(!confirm("Delete all "+list.length+" backup"+(list.length===1?"":"s")+" from Google Drive?\n\nThis cannot be undone. Your live data is not touched.")) return;
+      setBusy("deleteall"); setErr("");
+      let gone=0, failed=0;
+      for(const f of list){ try{ await gdDelete(f.id); gone++; }catch(e){ failed++; } }
+      setDrive([]);
+      if(failed) setErr(gone+" deleted, "+failed+" failed"); else toast(gone+" backup"+(gone===1?"":"s")+" deleted");
+      setBusy("");
+    }
+
+    async function deleteOne(f){
+      if(!confirm("Delete "+f.name+" from Drive?")) return;
+      setBusy(f.id);
+      try{ await gdDelete(f.id); setDrive(d=>(d||[]).filter(x=>x.id!==f.id)); toast("Deleted"); }
+      catch(e){ setErr(e.message||"Delete failed"); }
       setBusy("");
     }
 
@@ -2325,16 +2356,14 @@
       const f=ev.target.files && ev.target.files[0]; if(!f) return;
       setErr("");
       const fr=new FileReader();
-      fr.onload=()=>{ try{ const j=JSON.parse(fr.result); stage(j,f.name); }
+      fr.onload=()=>{ try{ stage(JSON.parse(fr.result), f.name); }
                       catch(e){ setErr("That file isn't valid JSON"); } };
       fr.readAsText(f);
     }
-
     function stage(j,label){
       if(!j || j.app!=="gavthan-manager" || !j.tables){ setErr("Not a Gavthan backup file"); return; }
       setPending({ data:j, label:label||"backup" });
     }
-
     async function pickDrive(f){
       setBusy(f.id); setErr("");
       try{ stage(await gdDownload(f.id), f.name); }
@@ -2346,71 +2375,109 @@
       const b=pending; if(!b) return;
       const c=bkCounts(b.data);
       const total=Object.keys(c).reduce((n,k)=> n+(c[k]||0),0);
-      if(!confirm("Restore "+total+" rows from "+b.label+"?\n\nExisting rows with the same id are overwritten with the backup's version. Nothing is deleted. This cannot be undone.")) return;
+      if(!confirm("Restore "+total+" rows from "+b.label+"?\n\nRows with a matching id are overwritten by the backup's version. Nothing is deleted. This cannot be undone.")) return;
       setBusy("restore"); setErr(""); setReport(null);
       try{
-        const rep=await restoreBackup(b.data,(t,done,all)=> setProgress(t+" "+done+"/"+all));
+        const rep=await restoreBackup(b.data,(t,done,all)=> setProgress(t.replace("mh_","")+" "+done+"/"+all));
         setReport(rep); setPending(null); setProgress("");
         const failed=rep.reduce((n,r)=> n+(r.failed||0),0);
-        if(failed) toastErr(failed+" rows failed - see the report"); else toast("Restore complete");
+        if(failed) toastErr(failed+" rows failed — see the report"); else toast("Restore complete");
       }catch(e){ setErr(e.message||"Restore failed"); }
       setBusy("");
     }
 
     const counts=pending?bkCounts(pending.data):null;
     const freq=prefs.freq||"off";
+    const anyBusy=!!busy;
 
     return html`<${Sheet} onClose=${onClose} title="Backup & restore">
       ${err && html`<div class="banner">${err}</div>`}
 
-      <div class="banner" style=${{background:'var(--surface-2)',color:'var(--ink)',borderColor:'var(--line-strong)'}}>
-        Covers the cashbook, on-hand stock, every stock movement, and the sync
-        setup (mappings + armed categories). Bills stay in the billing app.
-        ${prefs.lastAt?html`<br/><span class="tiny muted">Last backup ${fmtDT(prefs.lastAt)}${prefs.lastWhere==="drive"?" to Drive":" as a file"}</span>`
-                      :html`<br/><span class="tiny muted">No backup taken yet.</span>`}
+      <div class="card" style=${{marginTop:4}}>
+        <div class="pad">
+          <div class="between">
+            <b>Google Drive Auto-Backup</b>
+            ${gdConfigured() && html`<button class="btn ghost sm" disabled=${anyBusy}
+              onClick=${connected?disconnect:connect}>${busy==="connect"?"…":(connected?"Disconnect":"Connect")}</button>`}
+          </div>
+
+          ${!gdConfigured()
+            ? html`<div class="banner net" style=${{marginTop:10}}>
+                No <code>googleClientId</code> in GH_CONFIG, so Drive is off. Downloading a backup file still works below.
+              </div>`
+            : html`<div class="row" style=${{gap:6,marginTop:6}}>
+                <span class="livedot" style=${{background:connected?"var(--credit)":"var(--muted-2)"}}></span>
+                <span class="tiny" style=${{fontWeight:700,color:connected?"var(--credit)":"var(--muted)"}}>
+                  ${connected?"Connected":"Not connected"}</span>
+              </div>`}
+
+          <label>Auto-backup</label>
+          <select value=${freq} onChange=${e=>savePrefs({freq:e.target.value})}>
+            <option value="off">Off</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+
+          <div class="row" style=${{gap:8,marginTop:12,flexWrap:"wrap"}}>
+            <button class="btn sm bk-go" disabled=${anyBusy}
+              onClick=${()=>runBackup(connected)}>
+              <${Icon} name="upload" size=${15}/>${busy==="backup"?"Working…":"Backup Now"}</button>
+            ${connected && html`<button class="btn sm bk-list" disabled=${anyBusy}
+              onClick=${()=>loadDrive(false)}><${Icon} name="folder" size=${15}/>${busy==="list"?"…":"List Backups"}</button>`}
+            ${connected && html`<button class="btn sm bk-del" disabled=${anyBusy}
+              onClick=${deleteAll}><${Icon} name="trash" size=${15}/>${busy==="deleteall"?"…":"Delete All"}</button>`}
+          </div>
+
+          <div class="tiny muted" style=${{marginTop:8}}>
+            ${prefs.lastAt
+              ? "Last backup: "+fmtDT(prefs.lastAt)+(prefs.lastWhere==="drive"?" · Drive":" · file")
+              : "No backup taken yet."}
+          </div>
+          <div class="tiny muted" style=${{marginTop:4}}>
+            ${freq==="off"
+              ? "Automatic backup is off."
+              : "Runs on opening the app when one is due — a web page can't run while it's closed."}
+            ${freq!=="off" && !connected ? " Connect Drive, or a due backup has nowhere to go." : ""}
+          </div>
+        </div>
       </div>
 
-      <label>Back up now</label>
-      <button class="btn" disabled=${!!busy} onClick=${()=>runBackup(false)}>
-        ${busy==="backup"?"Working…":"Download backup file"}</button>
-      <button class="btn sec" style=${{marginTop:8}} disabled=${!!busy||!gdConfigured()}
-        onClick=${()=>runBackup(true)}>Back up to Google Drive</button>
-      ${!gdConfigured() && html`<p class="tiny muted" style=${{margin:"6px 2px 0"}}>
-        Drive is off until <code>googleClientId</code> is set in the GH_CONFIG block of index.html. Downloads work regardless.</p>`}
-
-      <label>Automatic backup</label>
-      <div class="seg">
-        ${[["off","Off"],["daily","Daily"],["weekly","Weekly"],["monthly","Monthly"]].map(o=>
-          html`<button key=${o[0]} class=${freq===o[0]?"on":""} onClick=${()=>savePrefs({freq:o[0]})}>${o[1]}</button>`)}
-      </div>
-      <p class="tiny muted" style=${{margin:"6px 2px 0"}}>
-        Runs when the app is opened and one is due — a web page can't run while it's closed.
-        ${gdConfigured()?" Due backups go to Drive.":" Set a googleClientId first, or a due backup has nowhere to go unattended."}
-        For backups that fire with nobody present, schedule it server-side (Supabase pg_cron + an Edge Function).
-      </p>
-
-      <label>Restore</label>
-      <input type="file" accept="application/json,.json" ref=${fileRef} onChange=${onFile}/>
-      ${gdConfigured() && html`<div>
-        <button class="btn ghost sm" style=${{width:"100%",marginTop:8}} disabled=${!!busy}
-          onClick=${loadDrive}>${busy==="list"?"Loading…":"List Drive backups"}</button>
-        ${drive.map(f=> html`<div class="entry" key=${f.id}>
-          <div class="grow"><div><b class="ell">${f.name}</b></div>
-            <div class="tiny muted">${fmtDT(f.createdTime)}</div></div>
-          <button class="btn ghost sm" disabled=${!!busy} onClick=${()=>pickDrive(f)}>${busy===f.id?"…":"Use"}</button>
-        </div>`)}
+      ${drive && html`<div class="card" style=${{marginTop:12}}>
+        <div class="hd"><h3>In Drive (${drive.length})</h3></div>
+        ${drive.length===0
+          ? html`<div class="empty"><${Icon} name="folder"/>No backups in Drive yet.</div>`
+          : drive.map(f=> html`<div class="entry" key=${f.id}>
+              <div class="grow">
+                <div><b class="ell">${f.name}</b></div>
+                <div class="tiny muted">${fmtDT(f.createdTime)}${f.size?(" · "+Math.round(Number(f.size)/1024)+" KB"):""}</div>
+              </div>
+              <button class="btn ghost sm" disabled=${anyBusy} onClick=${()=>pickDrive(f)}>${busy===f.id?"…":"Restore"}</button>
+              <button class="btn ghost sm" aria-label=${"Delete "+f.name} style=${{marginLeft:6}}
+                disabled=${anyBusy} onClick=${()=>deleteOne(f)}><${Icon} name="x" size=${14}/></button>
+            </div>`)}
       </div>`}
 
+      <div class="card" style=${{marginTop:12}}>
+        <div class="hd"><h3>Restore from a file</h3></div>
+        <div class="pad">
+          <input type="file" accept="application/json,.json" onChange=${onFile}/>
+          <div class="tiny muted" style=${{marginTop:6}}>Covers the cashbook, on-hand stock, movements and sync setup. Bills live in the billing app and aren't included.</div>
+        </div>
+      </div>
+
       ${pending && html`<div class="card" style=${{marginTop:12}}><div class="pad">
-        <b>${pending.label}</b>
+        <b class="ell">${pending.label}</b>
         <div class="tiny muted" style=${{margin:"2px 0 8px"}}>Taken ${fmtDT(pending.data.created_at)}</div>
         ${BACKUP_TABLES.map(t=> html`<div class="between tiny" key=${t} style=${{padding:"2px 0"}}>
           <span class="muted">${t.replace("mh_","")}</span><b>${counts[t]==null?"—":counts[t]}</b></div>`)}
         <div class="banner net" style=${{marginTop:10}}>
           Rows with a matching id are overwritten by the backup's version. Nothing is deleted, so anything created since the backup survives.
         </div>
-        <button class="btn danger" style=${{marginTop:10}} disabled=${!!busy}
+        <button class="btn danger" style=${{marginTop:10}} disabled=${anyBusy}
           onClick=${doRestore}>${busy==="restore"?("Restoring… "+progress):"Restore this backup"}</button>
+        <button class="btn ghost sm" style=${{width:"100%",marginTop:8}} disabled=${anyBusy}
+          onClick=${()=>setPending(null)}>Cancel</button>
       </div></div>`}
 
       ${report && html`<div class="card" style=${{marginTop:12}}><div class="hd"><h3>Restore report</h3></div>
@@ -2528,7 +2595,8 @@
       const tc=google.accounts.oauth2.initTokenClient({
         client_id:CFG.googleClientId,
         scope:"https://www.googleapis.com/auth/drive.file",
-        callback:(r)=>{ if(r && r.access_token){ gdToken=r.access_token; gdTokenAt=Date.now(); resolve(gdToken); }
+        callback:(r)=>{ if(r && r.access_token){ gdToken=r.access_token; gdTokenAt=Date.now();
+                          bkSavePrefs({...bkPrefs(), connected:true}); resolve(gdToken); }
                         else reject(new Error(r&&r.error?r.error:"Drive authorisation refused")); }
       });
       tc.requestAccessToken();
@@ -2560,6 +2628,25 @@
     if(!r.ok) throw new Error("Drive download failed ("+r.status+")");
     return r.json();
   }
+
+  async function gdDelete(id){
+    const token=await gdAuth();
+    const r=await fetch("https://www.googleapis.com/drive/v3/files/"+id,
+      { method:"DELETE", headers:{ Authorization:"Bearer "+token } });
+    if(!r.ok && r.status!==404) throw new Error("Drive delete failed ("+r.status+")");
+    return true;
+  }
+  // Hand the token back to Google and forget it locally. Without the revoke the
+  // grant survives on Google's side and "Disconnect" would be cosmetic.
+  async function gdRevoke(){
+    const t=gdToken;
+    gdToken=null; gdTokenAt=0;
+    bkSavePrefs({...bkPrefs(), connected:false});
+    if(!t) return;
+    try{ await fetch("https://oauth2.googleapis.com/revoke?token="+encodeURIComponent(t),
+      { method:"POST", headers:{ "Content-Type":"application/x-www-form-urlencoded" } }); }catch(e){}
+  }
+  const gdConnected=()=> !!bkPrefs().connected;
 
   /* ---- schedule ---- */
   const BK_EVERY={ off:0, daily:1, weekly:7, monthly:30 };
