@@ -22,6 +22,72 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
+-- 0. REPAIR — only needed if an earlier version of this file was already run.
+--    That version declared bill ids as uuid, which is wrong: mh_customers.id
+--    is TEXT here, so every "c.id = p_bill_id" raised
+--      ERROR: 42883: operator does not exist: text = uuid
+--    Postgres will not change a function's parameter type via CREATE OR
+--    REPLACE, so the old uuid-signature functions must be dropped first or
+--    both signatures end up defined and calls stay ambiguous.
+--    Safe to run on a clean database too — all three are IF EXISTS.
+-- ---------------------------------------------------------------------------
+drop function if exists public.mh_apply_bill_stock(uuid);
+drop function if exists public.mh_preview_bill_stock(uuid);
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+     where table_schema='public' and table_name='mh_stock_sync_log'
+       and column_name='bill_id' and data_type='uuid'
+  ) then
+    alter table public.mh_stock_sync_log alter column bill_id type text using bill_id::text;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 0b. REPAIR — foreign keys created without an ON DELETE action.
+--     Postgres defaults to NO ACTION, so mh_stock_sync_log.move_id blocked
+--     every delete from mh_stock_moves:
+--       ERROR: 23503: update or delete on table "mh_stock_moves" violates
+--              foreign key constraint on table "mh_stock_sync_log"
+--     The log is an audit trail — it must outlive what it points at, not
+--     pin it in place. Re-create the constraints with the right actions.
+--     Constraint names are looked up rather than assumed.
+-- ---------------------------------------------------------------------------
+do $$
+declare r record;
+begin
+  for r in
+    select con.conname, con.conrelid::regclass as tbl,
+           att.attname as col, cl.relname as ref
+      from pg_constraint con
+      join pg_class cl on cl.oid = con.confrelid
+      join unnest(con.conkey) with ordinality k(attnum, ord) on true
+      join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k.attnum
+     where con.contype = 'f'
+       and con.confdeltype = 'a'                       -- 'a' = NO ACTION
+       -- to_regclass (not ::regclass) so this is a no-op on a clean database
+       -- where these tables don't exist yet; a missing name yields NULL and
+       -- simply matches nothing instead of raising.
+       and con.conrelid in (to_regclass('public.mh_stock_sync_log'),
+                            to_regclass('public.mh_item_map'))
+  loop
+    execute format('alter table %s drop constraint %I', r.tbl, r.conname);
+    if r.tbl::text = 'mh_item_map' then
+      execute format(
+        'alter table public.mh_item_map add constraint %I foreign key (%I) references public.%I(id) on delete cascade',
+        r.conname, r.col, r.ref);
+    else
+      execute format(
+        'alter table public.mh_stock_sync_log add constraint %I foreign key (%I) references public.%I(id) on delete set null',
+        r.conname, r.col, r.ref);
+    end if;
+    raise notice 'repaired FK % on % (%)', r.conname, r.tbl, r.col;
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- 1. Which categories deduct stock.
 --
 --    NOTE: mh_categories cannot hold this flag. It is not a row-per-category
@@ -61,7 +127,8 @@ create table if not exists public.mh_item_map (
   id                bigserial primary key,
   menu_name         text        not null,
   menu_name_norm    text        generated always as (public.mh_norm(menu_name)) stored,
-  inventory_item_id uuid        not null references public.mh_inventory_items(id),
+  -- CASCADE: a mapping is meaningless once its inventory item is gone.
+  inventory_item_id uuid        not null references public.mh_inventory_items(id) on delete cascade,
   qty_per_unit      numeric     not null default 1 check (qty_per_unit > 0),
   active            boolean     not null default true,
   created_by        text,
@@ -81,13 +148,17 @@ create unique index if not exists mh_item_map_name_uniq
 -- ---------------------------------------------------------------------------
 create table if not exists public.mh_stock_sync_log (
   id                bigserial primary key,
-  bill_id           uuid        not null,
+  -- mh_customers.id is TEXT in this schema, not uuid. Declaring this uuid makes
+  -- every "c.id = p_bill_id" comparison fail with 42883 (text = uuid).
+  bill_id           text        not null,
   menu_name         text        not null,
   menu_name_norm    text        not null,
-  inventory_item_id uuid        references public.mh_inventory_items(id),
+  inventory_item_id uuid        references public.mh_inventory_items(id) on delete set null,
   bill_qty          numeric     not null,
   qty_deducted      numeric     not null,
-  move_id           uuid        references public.mh_stock_moves(id),
+  -- ON DELETE SET NULL: this log is an audit trail and must outlive the move it
+  -- points at. Without it the FK blocks any delete from mh_stock_moves.
+  move_id           uuid        references public.mh_stock_moves(id) on delete set null,
   status            text        not null,   -- 'applied' | 'unmapped'
   created_at        timestamptz not null default now()
 );
@@ -104,7 +175,7 @@ create index if not exists mh_stock_sync_log_bill_idx
 --    can prompt the user about unmapped items BEFORE applying.
 --    Read-only: safe to call as often as the UI likes.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_preview_bill_stock(p_bill_id uuid)
+create or replace function public.mh_preview_bill_stock(p_bill_id text)
 returns table (
   menu_name          text,
   category           text,
@@ -121,7 +192,11 @@ as $$
   with lines as (
     select
       nullif(trim(li ->> 'name'), '')          as menu_name,
-      nullif(trim(li ->> 'category'), '')      as category,
+      -- The billing app writes the category under "cat". "category" is kept as
+      -- a fallback only; reading the wrong key yields NULL, which silently
+      -- matches no armed category and makes the whole bill look like it has
+      -- nothing to deduct.
+      nullif(trim(coalesce(li ->> 'cat', li ->> 'category')), '') as category,
       coalesce((li ->> 'qty')::numeric, 0)     as bill_qty
     from public.mh_customers c
     cross join lateral jsonb_array_elements(
@@ -171,7 +246,7 @@ $$;
 --    * Unmapped lines are recorded with status 'unmapped' and NOT deducted,
 --      so nothing fails silently — they show up in the reconcile view.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_apply_bill_stock(p_bill_id uuid)
+create or replace function public.mh_apply_bill_stock(p_bill_id text)
 returns table (applied integer, unmapped integer, skipped_reason text)
 language plpgsql security definer set search_path = public
 as $$
@@ -273,7 +348,7 @@ select c.id            as bill_id,
               case jsonb_typeof(c.items::jsonb) when 'array' then c.items::jsonb else '[]'::jsonb end
             ) as li
        join public.mh_stock_categories cat
-         on cat.name_norm = public.mh_norm(li ->> 'category')
+         on cat.name_norm = public.mh_norm(coalesce(li ->> 'cat', li ->> 'category'))
    );
 
 -- ---------------------------------------------------------------------------
@@ -299,9 +374,9 @@ create policy mh_item_map_admin_write on public.mh_item_map
 -- The log is written only by the SECURITY DEFINER function; no direct writes.
 revoke insert, update, delete on public.mh_stock_sync_log from anon, authenticated;
 
-revoke all on function public.mh_apply_bill_stock(uuid) from public, anon;
-grant execute on function public.mh_apply_bill_stock(uuid)   to authenticated;
-grant execute on function public.mh_preview_bill_stock(uuid) to authenticated;
+revoke all on function public.mh_apply_bill_stock(text) from public, anon;
+grant execute on function public.mh_apply_bill_stock(text)   to authenticated;
+grant execute on function public.mh_preview_bill_stock(text) to authenticated;
 
 -- ============================================================================
 --  BILLING APP CALL SEQUENCE (on settle)
