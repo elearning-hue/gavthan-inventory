@@ -126,7 +126,10 @@ as $$
   with lines as (
     select
       nullif(trim(li ->> 'name'), '')          as menu_name,
-      nullif(trim(li ->> 'category'), '')      as category,
+      -- the billing app stores the line category under `cat`; keep `category`
+      -- as a fallback. Reading only `category` returned null, so every line was
+      -- dropped by the armed-category join and nothing ever deducted.
+      nullif(trim(coalesce(li ->> 'cat', li ->> 'category')), '') as category,
       coalesce((li ->> 'qty')::numeric, 0)     as bill_qty
     from public.mh_customers c
     cross join lateral jsonb_array_elements(

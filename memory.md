@@ -164,6 +164,18 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-11-25 (later 2) — Bill line category key is `cat`, not `category`
+Real blocker behind omlet never deducting. Billing app writes each
+`mh_customers.items` line as `{"id","cat","qty","name","price","times"[]}` —
+category under **`cat`**. Both `mh_preview_bill_stock` (read `li->>'category'`)
+and the web client's bill-line parse (`li.category`) read null, so every line
+was dropped by the armed-category join / grouped as uncategorised, and nothing
+deducted even when mapped + category armed. Fixed both to
+`coalesce(cat, category)`. Confirmed live: after the fix the backfill returned
+`applied=2` on bill 7fa81653… (omlet 8 + omlet double 4 deducted). Also note:
+these bills are Devanagari (ऑमलेट / ऑमलेट डबल), `cat:"Egg"`, armed as `egg`.
+Bill ids are TEXT (uuid-shaped here but the column is text). Same PR #20.
+
 ### 2026-11-25 (later) — Mapped item still shows unmapped (omlet) — DB fix
 User mapped "omlet"/"omlet double" but Stock sync still listed them unmapped
 (8 + 4 "sold untracked"). **Root cause is DB-side**, pre-existing in
