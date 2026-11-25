@@ -140,7 +140,12 @@ as $$
     ii.name                                    as inventory_name,
     m.qty_per_unit,
     round(l.bill_qty * coalesce(m.qty_per_unit, 0), 3) as qty_to_deduct,
-    (sl.id is not null)                        as already_applied,
+    -- "already applied" means the stock was actually DEDUCTED, i.e. an 'applied'
+    -- log row exists. A prior 'unmapped' row must NOT count: the line sold with
+    -- nothing to deduct from, and once it is mapped a replay has to deduct it
+    -- and upgrade that row. Testing only `sl.id is not null` wrongly treated an
+    -- unmapped line as done, so mapping it never took effect.
+    (sl.id is not null and sl.status = 'applied') as already_applied,
     (m.id is not null)                         as is_mapped
   from lines l
   -- only categories the admin screen has armed
@@ -237,7 +242,18 @@ begin
     values
       (p_bill_id, r.menu_name, public.mh_norm(r.menu_name), r.inventory_item_id,
        r.bill_qty, r.qty_to_deduct, v_move_id, 'applied')
-    on conflict (bill_id, menu_name_norm) do nothing;
+    -- A line reaches here only when already_applied was false, so any existing
+    -- row is a stale 'unmapped' one (the item was mapped after it first sold).
+    -- Upgrade it in place to 'applied'; the `where status <> 'applied'` guard
+    -- keeps a genuinely-applied row untouched, so a retry still cannot
+    -- double-count.
+    on conflict (bill_id, menu_name_norm) do update set
+      inventory_item_id = excluded.inventory_item_id,
+      bill_qty          = excluded.bill_qty,
+      qty_deducted      = excluded.qty_deducted,
+      move_id           = excluded.move_id,
+      status            = 'applied'
+    where public.mh_stock_sync_log.status <> 'applied';
 
     v_applied := v_applied + 1;
   end loop;

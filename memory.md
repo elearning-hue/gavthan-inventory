@@ -164,6 +164,29 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-11-25 (later) — Mapped item still shows unmapped (omlet) — DB fix
+User mapped "omlet"/"omlet double" but Stock sync still listed them unmapped
+(8 + 4 "sold untracked"). **Root cause is DB-side**, pre-existing in
+`supabase-stock-sync.sql`, not the client:
+- `mh_preview_bill_stock` computed `already_applied = (sl.id is not null)` —
+  i.e. ANY `mh_stock_sync_log` row, **including a `status='unmapped'` row**. So
+  once a line logged unmapped, `already_applied` stayed true forever;
+  `mh_apply_bill_stock` then `continue`d past it on every replay, so mapping
+  the item never deducted and the unmapped log row was never upgraded.
+- A pure client fix is impossible: line 300 `revoke insert,update,delete on
+  mh_stock_sync_log from authenticated` — only the SECURITY DEFINER RPC writes
+  the log.
+**Fix (needs the two functions re-run in Supabase — `create or replace`):**
+1. `already_applied = (sl.id is not null and sl.status='applied')`.
+2. apply RPC mapped-branch log insert: `on conflict … do update set status=
+   'applied', … where mh_stock_sync_log.status <> 'applied'` — upgrades a stale
+   unmapped row, guard keeps a real applied row untouched so no double-count.
+Client: gap cards now detect an already-mapped name and show **"Apply now"**
+(replay only, no re-pick) instead of "Map & apply"; toast tells the user to
+run the SQL update if nothing applies. **ACTION FOR USER: run the updated
+functions in `supabase-stock-sync.sql` against Supabase; until then the gaps
+persist.** Same PR #20.
+
 ### 2026-11-25 — Stock-sync mapping: 3 fixes (web, mirrors Android)
 Branch `claude/stock-sync-mapping-fix-98941d`. Client-side only, no DB
 migration. All in `StockSyncSheet` (`index.html`).

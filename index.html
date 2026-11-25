@@ -2437,6 +2437,24 @@
       return Object.values(g).sort((a,b)=> b.qty-a.qty);
     },[unmapped]);
 
+    // A gap whose name is already mapped just needs its waiting bills replayed —
+    // the item was mapped after it first sold, so no new mapping is required,
+    // only an apply. (Needs the DB fix that stops a stale 'unmapped' log row
+    // from masking the line as already applied.)
+    const mapByNorm=useMemo(()=>{
+      const h={}; maps.forEach(m=>{ h[normName(m.menu_name)]=m; }); return h;
+    },[maps]);
+    async function applyGapNow(gap){
+      setBusy(gap.menu_name);
+      try{
+        const applied=await replayWaiting(gap.menu_name);
+        if(applied) toast(`${applied} deduction${applied===1?"":"s"} applied to "${gap.menu_name}"`);
+        else toastErr(`Nothing applied for "${gap.menu_name}" — if it stays here, the stock-sync DB functions need the update from supabase-stock-sync.sql`);
+        await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Couldn't apply"); }
+      setBusy("");
+    }
+
     // Create the mapping, then immediately replay every bill it unblocks.
     async function saveMapping(gap){
       const d=draft[gap.menu_name]||{};
@@ -2619,19 +2637,27 @@
                   <span class="pill low">${num(g.qty)} sold untracked</span>
                 </div>
                 <div class="tiny muted" style=${{marginTop:2}}>${g.bills.size} bill${g.bills.size===1?"":"s"} waiting · last ${fmtDT(g.last)}</div>
-                <div class="row" style=${{gap:8,marginTop:10,flexWrap:"wrap"}}>
-                  <select style=${{flex:"1 1 160px"}} value=${(draft[g.menu_name]||{}).item_id||""}
-                    onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),item_id:e.target.value}}))}>
-                    <option value="">Deduct from…</option>
-                    ${items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}${it.unit?" ("+it.unit+")":""}</option>`)}
-                  </select>
-                  <input type="number" min="0" step="any" style=${{width:92}} placeholder="ratio"
-                    value=${(draft[g.menu_name]||{}).ratio!=null?(draft[g.menu_name]||{}).ratio:"1"}
-                    onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),ratio:e.target.value}}))}/>
-                  <button class="btn sm" disabled=${busy===g.menu_name}
-                    onClick=${()=>saveMapping(g)}>${busy===g.menu_name?"Saving…":"Map & apply"}</button>
-                </div>
-                <div class="tiny muted" style=${{marginTop:6}}>Ratio = stock units consumed per menu item sold. A pack of 20 against stick-counted stock is 20.</div>
+                ${mapByNorm[normName(g.menu_name)] ? html`<div>
+                  <div class="tiny muted" style=${{marginTop:6}}>Already mapped → ${itemName(mapByNorm[normName(g.menu_name)].inventory_item_id)}. These bills just need applying.</div>
+                  <div class="row" style=${{gap:8,marginTop:10,flexWrap:"wrap"}}>
+                    <button class="btn sm" disabled=${busy===g.menu_name}
+                      onClick=${()=>applyGapNow(g)}>${busy===g.menu_name?"Applying…":"Apply now"}</button>
+                  </div>
+                </div>` : html`<div>
+                  <div class="row" style=${{gap:8,marginTop:10,flexWrap:"wrap"}}>
+                    <select style=${{flex:"1 1 160px"}} value=${(draft[g.menu_name]||{}).item_id||""}
+                      onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),item_id:e.target.value}}))}>
+                      <option value="">Deduct from…</option>
+                      ${items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}${it.unit?" ("+it.unit+")":""}</option>`)}
+                    </select>
+                    <input type="number" min="0" step="any" style=${{width:92}} placeholder="ratio"
+                      value=${(draft[g.menu_name]||{}).ratio!=null?(draft[g.menu_name]||{}).ratio:"1"}
+                      onChange=${e=>setDraft(o=>({...o,[g.menu_name]:{...(o[g.menu_name]||{}),ratio:e.target.value}}))}/>
+                    <button class="btn sm" disabled=${busy===g.menu_name}
+                      onClick=${()=>saveMapping(g)}>${busy===g.menu_name?"Saving…":"Map & apply"}</button>
+                  </div>
+                  <div class="tiny muted" style=${{marginTop:6}}>Ratio = stock units consumed per menu item sold. A pack of 20 against stick-counted stock is 20.</div>
+                </div>`}
               </div>
             </div>`)}
 
