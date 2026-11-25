@@ -81,7 +81,8 @@ create unique index if not exists mh_item_map_name_uniq
 -- ---------------------------------------------------------------------------
 create table if not exists public.mh_stock_sync_log (
   id                bigserial primary key,
-  bill_id           uuid        not null,
+  -- bill_id is TEXT: mh_customers.id is text in this database, not uuid.
+  bill_id           text        not null,
   menu_name         text        not null,
   menu_name_norm    text        not null,
   inventory_item_id uuid        references public.mh_inventory_items(id),
@@ -104,7 +105,11 @@ create index if not exists mh_stock_sync_log_bill_idx
 --    can prompt the user about unmapped items BEFORE applying.
 --    Read-only: safe to call as often as the UI likes.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_preview_bill_stock(p_bill_id uuid)
+-- mh_customers.id is text in this DB, so bill ids are text end to end. Drop any
+-- earlier uuid-typed overload first, or create-or-replace would leave it behind
+-- as a second signature and PostgREST could not tell which to call.
+drop function if exists public.mh_preview_bill_stock(uuid);
+create or replace function public.mh_preview_bill_stock(p_bill_id text)
 returns table (
   menu_name          text,
   category           text,
@@ -176,7 +181,8 @@ $$;
 --    * Unmapped lines are recorded with status 'unmapped' and NOT deducted,
 --      so nothing fails silently — they show up in the reconcile view.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_apply_bill_stock(p_bill_id uuid)
+drop function if exists public.mh_apply_bill_stock(uuid);
+create or replace function public.mh_apply_bill_stock(p_bill_id text)
 returns table (applied integer, unmapped integer, skipped_reason text)
 language plpgsql security definer set search_path = public
 as $$
@@ -315,9 +321,9 @@ create policy mh_item_map_admin_write on public.mh_item_map
 -- The log is written only by the SECURITY DEFINER function; no direct writes.
 revoke insert, update, delete on public.mh_stock_sync_log from anon, authenticated;
 
-revoke all on function public.mh_apply_bill_stock(uuid) from public, anon;
-grant execute on function public.mh_apply_bill_stock(uuid)   to authenticated;
-grant execute on function public.mh_preview_bill_stock(uuid) to authenticated;
+revoke all on function public.mh_apply_bill_stock(text) from public, anon;
+grant execute on function public.mh_apply_bill_stock(text)   to authenticated;
+grant execute on function public.mh_preview_bill_stock(text) to authenticated;
 
 -- ============================================================================
 --  BILLING APP CALL SEQUENCE (on settle)
