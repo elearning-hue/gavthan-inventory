@@ -164,6 +164,29 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-11-25 — Stock-sync mapping: 3 fixes (web, mirrors Android)
+Branch `claude/stock-sync-mapping-fix-98941d`. Client-side only, no DB
+migration. All in `StockSyncSheet` (`index.html`).
+1. **Duplicate-key crash fixed.** Mapping a name that was already mapped (or
+   the same name in another casing) blind-INSERTed and hit
+   `mh_item_map_name_uniq` (partial unique on `menu_name_norm where active`).
+   New `upsertItemMap(name,itemId,ratio)`: look up the row by `menu_name_norm`
+   (matches DB `mh_norm`), UPDATE it (set item, ratio, `active=true`) if found,
+   else INSERT `active=true`. Both the queue "Map & apply" (`saveMapping`) and
+   the proactive "Add mapping" (`saveManualMapping`) now upsert; dropped the
+   old "already mapped" hard block so re-mapping overwrites the one row.
+2. **Re-point on billing-app rename.** New `renameMapping(m,newName)` + a
+   "Change name" button and inline grouped picker on each existing mapping.
+   Drops any stale row under the target `menu_name_norm` first (so it never
+   trips the uniq index), updates this row's `menu_name` (+`active=true`), then
+   replays bills waiting under the new name.
+3. **Category-grouped menu picker.** `groupMenuByCat()` builds `<optgroup>`s by
+   the bill category each item sold under. Proactive add-mapping picker and the
+   rename picker both use it (free-text input kept for not-yet-sold names).
+Shared `replayWaiting(name)` helper replays logged-unmapped bills for a name.
+Verified: `node --check` on the inline script passes; could not runtime-test
+(sandbox blocks the React/htm CDN). PR opened, not merged.
+
 ### 2026-07-09 (later)
 - **Stock-sync config made dynamic, not hardcoded.** Categories tab now reads
   `mh_categories` instead of the fixed `SYNC_CATS` array; Mapping tab gained a

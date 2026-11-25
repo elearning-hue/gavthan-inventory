@@ -2268,6 +2268,22 @@
   }
   const normCat=(s)=> String(s||"").toLowerCase().trim().replace(/\s+/g," ");
 
+  // Group menu rows ({name,category}) into category buckets for an <optgroup>
+  // picker, so a menu item is chosen under the bill category it sold in rather
+  // than from one flat list. Uncategorised lines fall into a trailing bucket.
+  const UNCAT_LABEL="Uncategorised";
+  function groupMenuByCat(rows){
+    const g={};
+    (rows||[]).forEach(r=>{
+      if(!r||!r.name) return;
+      const c=(r.category&&r.category.trim())||UNCAT_LABEL;
+      (g[c]||(g[c]=[])).push(r);
+    });
+    return Object.keys(g)
+      .sort((a,b)=> a===UNCAT_LABEL?1 : b===UNCAT_LABEL?-1 : a.localeCompare(b))
+      .map(c=>({ cat:c, items:g[c].slice().sort((a,b)=> a.name.localeCompare(b.name)) }));
+  }
+
   function StockSyncSheet({items,me,onClose,onChanged}){
     const [tab,setTab]=useState("pending");        // pending | mapping | cats
     const [loading,setLoading]=useState(true);
@@ -2283,6 +2299,8 @@
     const [menuRows,setMenuRows]=useState([]);     // {name, category} seen on settled bills
     const [draft,setDraft]=useState({});           // menu_name -> {item_id, ratio}
     const [manual,setManual]=useState({menu:"",item_id:"",ratio:"1"});
+    const [renaming,setRenaming]=useState("");      // mapping id being re-pointed
+    const [renameTo,setRenameTo]=useState("");      // chosen current menu name
     const [err,setErr]=useState("");
 
     const load=useCallback(async()=>{
@@ -2343,6 +2361,41 @@
       return (data && data[0]) || {applied:0,unmapped:0,skipped_reason:null};
     }
 
+    // Write a mapping for a menu name WITHOUT ever blind-inserting: a blind
+    // insert collides with mh_item_map_name_uniq (the partial unique index on
+    // menu_name_norm where active) whenever that name — or the same name in a
+    // different casing — is already mapped. So look the row up by its normalized
+    // name first and overwrite it, re-arming it if it had been turned off; only
+    // insert when nothing matches. One row per menu name, re-mapping overwrites.
+    async function upsertItemMap(menuName,itemId,ratio){
+      const norm=normName(menuName);
+      const q=await sb.from("mh_item_map").select("id")
+        .eq("menu_name_norm",norm).order("active",{ascending:false}).limit(1);
+      if(q.error) throw new Error(q.error.message);
+      const existing=q.data&&q.data[0];
+      if(existing){
+        const { error }=await sb.from("mh_item_map").update({
+          menu_name:menuName, inventory_item_id:itemId, qty_per_unit:ratio, active:true
+        }).eq("id",existing.id);
+        if(error) throw new Error(error.message);
+      }else{
+        const { error }=await sb.from("mh_item_map").insert({
+          menu_name:menuName, inventory_item_id:itemId, qty_per_unit:ratio,
+          active:true, created_by:(me&&me.email)||null });
+        if(error) throw new Error(error.message);
+      }
+    }
+
+    // Replay every bill currently waiting (logged unmapped) under a menu name,
+    // so a mapping that was just created or re-pointed applies straight away.
+    async function replayWaiting(menuName){
+      const norm=normName(menuName);
+      const waiting=(gaps.find(g=> normName(g.menu_name)===norm)||{}).bills;
+      let applied=0;
+      if(waiting) for(const billId of waiting){ try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){} }
+      return applied;
+    }
+
     async function syncOne(billId,label){
       setBusy(billId);
       try{
@@ -2392,10 +2445,7 @@
       if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
       setBusy(gap.menu_name);
       try{
-        const { error } = await sb.from("mh_item_map").insert({
-          menu_name:gap.menu_name, inventory_item_id:itemId,
-          qty_per_unit:ratio, created_by:(me&&me.email)||null });
-        if(error) throw new Error(error.message);
+        await upsertItemMap(gap.menu_name,itemId,ratio);
         let applied=0;
         for(const billId of gap.bills){
           try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){}
@@ -2414,26 +2464,57 @@
       return menuRows.filter(r=> !have.has(normName(r.name)));
     },[menuRows,maps]);
 
+    // Category-grouped options for the pickers (change 3). The proactive "Add a
+    // mapping" picker offers only names not already mapped; the rename picker
+    // offers every current menu name so a mapping can be re-pointed at any of
+    // them. Both are grouped by the bill category the item sold under.
+    const addMenuGroups=useMemo(()=> groupMenuByCat(unmappedMenuNames),[unmappedMenuNames]);
+    const allMenuGroups=useMemo(()=> groupMenuByCat(menuRows),[menuRows]);
+
     // Proactive pairing: same insert as the queue flow, then replay anything
     // already waiting on that name so a back-dated mapping still applies.
     async function saveManualMapping(){
       const name=manual.menu.trim(), ratio=num(manual.ratio!==""?manual.ratio:1);
       if(!name || !manual.item_id) return;
       if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
-      if(maps.some(m=> normName(m.menu_name)===normName(name))){ toastErr("That menu item is already mapped"); return; }
+      // No "already mapped" block: re-pairing an existing name overwrites its
+      // single row (upsertItemMap) instead of blind-inserting into a collision.
+      const already=maps.some(m=> normName(m.menu_name)===normName(name));
       setBusy("manual");
       try{
-        const { error } = await sb.from("mh_item_map").insert({
-          menu_name:name, inventory_item_id:manual.item_id,
-          qty_per_unit:ratio, created_by:(me&&me.email)||null });
-        if(error) throw new Error(error.message);
-        const waiting=(gaps.find(g=> normName(g.menu_name)===normName(name))||{}).bills;
-        let applied=0;
-        if(waiting) for(const billId of waiting){ try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){} }
-        toast(`Mapped "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
+        await upsertItemMap(name,manual.item_id,ratio);
+        const applied=await replayWaiting(name);
+        toast(`${already?"Re-mapped":"Mapped"} "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
         setManual({menu:"",item_id:"",ratio:"1"});
         await load(); onChanged && onChanged();
       }catch(e){ toastErr(e.message||"Couldn't save mapping"); }
+      setBusy("");
+    }
+
+    // Re-point an existing mapping at a corrected current menu name (the billing
+    // app renamed the item). The target name may already have a stale row, which
+    // would trip mh_item_map_name_uniq — drop any such row first, then move this
+    // mapping onto the new name and replay bills that were waiting under it.
+    async function renameMapping(m,newName){
+      const name=String(newName||"").trim();
+      if(!name){ toastErr("Pick the correct current name"); return; }
+      if(normName(name)===normName(m.menu_name)){ setRenaming(""); setRenameTo(""); return; }
+      setBusy(m.id);
+      try{
+        const norm=normName(name);
+        const dup=await sb.from("mh_item_map").select("id").eq("menu_name_norm",norm).neq("id",m.id);
+        if(dup.error) throw new Error(dup.error.message);
+        for(const d of (dup.data||[])){
+          const del=await sb.from("mh_item_map").delete().eq("id",d.id);
+          if(del.error) throw new Error(del.error.message);
+        }
+        const { error }=await sb.from("mh_item_map").update({ menu_name:name, active:true }).eq("id",m.id);
+        if(error) throw new Error(error.message);
+        const applied=await replayWaiting(name);
+        toast(`Mapping now points at "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
+        setRenaming(""); setRenameTo("");
+        await load(); onChanged && onChanged();
+      }catch(e){ toastErr(e.message||"Couldn't change name"); }
       setBusy("");
     }
 
@@ -2558,11 +2639,15 @@
           <div class="pad">
             <p class="tiny muted" style=${{margin:"0 0 10px"}}>Pair a menu item up front, before it is ever sold unmapped. Names come from items seen on settled bills; type one in if it hasn't sold yet.</p>
             <label>Menu item</label>
-            <input list="gh-menu-names" value=${manual.menu} placeholder="e.g. Aquafina 1L"
+            <select value=${addMenuGroups.some(gr=>gr.items.some(it=>it.name===manual.menu))?manual.menu:""}
+              onChange=${e=> e.target.value && setManual(o=>({...o,menu:e.target.value}))}>
+              <option value="">Pick a menu item by category…</option>
+              ${addMenuGroups.map(gr=> html`<optgroup key=${gr.cat} label=${gr.cat}>
+                ${gr.items.map(it=> html`<option key=${it.name} value=${it.name}>${it.name}</option>`)}
+              </optgroup>`)}
+            </select>
+            <input value=${manual.menu} placeholder="…or type a new name"
               onChange=${e=>setManual(o=>({...o,menu:e.target.value}))}/>
-            <datalist id="gh-menu-names">
-              ${unmappedMenuNames.map(m=> html`<option key=${m.name} value=${m.name}>${m.category||""}</option>`)}
-            </datalist>
             <label>Deduct from</label>
             <select value=${manual.item_id} onChange=${e=>setManual(o=>({...o,item_id:e.target.value}))}>
               <option value="">Pick an inventory item…</option>
@@ -2580,13 +2665,33 @@
         <div class="card" style=${{marginTop:14}}><div class="hd"><h3>Existing mappings (${maps.length})</h3></div>
           ${maps.length===0
             ? html`<div class="empty">No mappings yet.</div>`
-            : maps.map(m=> html`<div class="entry" key=${m.id}>
-                <div class="grow">
-                  <div><b class="ell">${m.menu_name}</b></div>
-                  <div class="tiny muted">→ ${itemName(m.inventory_item_id)}${num(m.qty_per_unit)!==1?" × "+num(m.qty_per_unit):""}</div>
+            : maps.map(m=> html`<div key=${m.id}>
+                <div class="entry">
+                  <div class="grow">
+                    <div><b class="ell">${m.menu_name}</b></div>
+                    <div class="tiny muted">→ ${itemName(m.inventory_item_id)}${num(m.qty_per_unit)!==1?" × "+num(m.qty_per_unit):""}</div>
+                  </div>
+                  <button class="btn ghost sm" disabled=${!!busy}
+                    onClick=${()=>{ setRenaming(renaming===m.id?"":m.id); setRenameTo(""); }}>${renaming===m.id?"Cancel":"Change name"}</button>
+                  <button class="btn ghost sm" disabled=${busy===m.id}
+                    onClick=${()=>removeMapping(m)}><${Icon} name="x" size=${15}/></button>
                 </div>
-                <button class="btn ghost sm" disabled=${busy===m.id}
-                  onClick=${()=>removeMapping(m)}><${Icon} name="x" size=${15}/></button>
+                ${renaming===m.id && html`<div class="card" style=${{margin:"0 0 10px",background:"var(--bg2,#f6f6f6)"}}>
+                  <div class="pad">
+                    <p class="tiny muted" style=${{margin:"0 0 8px"}}>Renamed in the billing app? Select the correct current name to re-point this mapping and enable inventory control. The old name stops deducting; bills waiting under the new name apply now.</p>
+                    <div class="row" style=${{gap:8,flexWrap:"wrap"}}>
+                      <select style=${{flex:"1 1 160px"}} value=${renameTo}
+                        onChange=${e=>setRenameTo(e.target.value)}>
+                        <option value="">Select correct name…</option>
+                        ${allMenuGroups.map(gr=> html`<optgroup key=${gr.cat} label=${gr.cat}>
+                          ${gr.items.map(it=> html`<option key=${it.name} value=${it.name}>${it.name}</option>`)}
+                        </optgroup>`)}
+                      </select>
+                      <button class="btn sm" disabled=${busy===m.id||!renameTo}
+                        onClick=${()=>renameMapping(m,renameTo)}>${busy===m.id?"Saving…":"Re-point"}</button>
+                    </div>
+                  </div>
+                </div>`}
               </div>`)}
         </div>
       </div>`}
