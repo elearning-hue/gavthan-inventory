@@ -164,6 +164,85 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-11-26 — Mapping driven by live mh_menu, keyed on stable menu id
+Billing app HAS a menu table `mh_menu (id text, cat, name, price, available,
+sort_order, image_data)`. Bill `items` lines carry that `id`. Reworked
+stock-sync to be fully menu-driven, rename-proof, zero seeding:
+- `mh_item_map` + `menu_item_id text` (nullable). Uniqueness split: id-maps
+  unique on `menu_item_id where active`, legacy name-maps unique on
+  `menu_name_norm where active and menu_item_id is null`.
+- `mh_preview_bill_stock`: resolve each line via a lateral that matches
+  `menu_item_id = line.id` FIRST, falls back to `mh_norm(name)`; id-match
+  preferred so an id-map and a legacy name-map never both deduct. Reads line
+  `id` from the JSON. A billing rename changes `mh_menu.name` not `id`, so an
+  id-keyed mapping keeps deducting with no "change name" step.
+- Removed the hardcoded `mh_stock_categories` seed. Arming list now dynamic:
+  `mh_menu.cat` (distinct) ∪ `mh_categories` ∪ armed-orphans.
+- Client (`StockSyncSheet`): picker fetches `mh_menu` live (grouped by cat,
+  value = id), stores `menu_item_id` + current name snapshot; existing mappings
+  show the LIVE name via id and a "Link to menu / Re-point" action; menu names
+  no longer derived from settled bills (bills read only for pending split).
+Legacy name-only maps (e.g. omlet) keep working via the name fallback and can
+be linked to the menu from the UI. Same PR #20.
+
+### 2026-11-25 (later 2) — Bill line category key is `cat`, not `category`
+Real blocker behind omlet never deducting. Billing app writes each
+`mh_customers.items` line as `{"id","cat","qty","name","price","times"[]}` —
+category under **`cat`**. Both `mh_preview_bill_stock` (read `li->>'category'`)
+and the web client's bill-line parse (`li.category`) read null, so every line
+was dropped by the armed-category join / grouped as uncategorised, and nothing
+deducted even when mapped + category armed. Fixed both to
+`coalesce(cat, category)`. Confirmed live: after the fix the backfill returned
+`applied=2` on bill 7fa81653… (omlet 8 + omlet double 4 deducted). Also note:
+these bills are Devanagari (ऑमलेट / ऑमलेट डबल), `cat:"Egg"`, armed as `egg`.
+Bill ids are TEXT (uuid-shaped here but the column is text). Same PR #20.
+
+### 2026-11-25 (later) — Mapped item still shows unmapped (omlet) — DB fix
+User mapped "omlet"/"omlet double" but Stock sync still listed them unmapped
+(8 + 4 "sold untracked"). **Root cause is DB-side**, pre-existing in
+`supabase-stock-sync.sql`, not the client:
+- `mh_preview_bill_stock` computed `already_applied = (sl.id is not null)` —
+  i.e. ANY `mh_stock_sync_log` row, **including a `status='unmapped'` row**. So
+  once a line logged unmapped, `already_applied` stayed true forever;
+  `mh_apply_bill_stock` then `continue`d past it on every replay, so mapping
+  the item never deducted and the unmapped log row was never upgraded.
+- A pure client fix is impossible: line 300 `revoke insert,update,delete on
+  mh_stock_sync_log from authenticated` — only the SECURITY DEFINER RPC writes
+  the log.
+**Fix (needs the two functions re-run in Supabase — `create or replace`):**
+1. `already_applied = (sl.id is not null and sl.status='applied')`.
+2. apply RPC mapped-branch log insert: `on conflict … do update set status=
+   'applied', … where mh_stock_sync_log.status <> 'applied'` — upgrades a stale
+   unmapped row, guard keeps a real applied row untouched so no double-count.
+Client: gap cards now detect an already-mapped name and show **"Apply now"**
+(replay only, no re-pick) instead of "Map & apply"; toast tells the user to
+run the SQL update if nothing applies. **ACTION FOR USER: run the updated
+functions in `supabase-stock-sync.sql` against Supabase; until then the gaps
+persist.** Same PR #20.
+
+### 2026-11-25 — Stock-sync mapping: 3 fixes (web, mirrors Android)
+Branch `claude/stock-sync-mapping-fix-98941d`. Client-side only, no DB
+migration. All in `StockSyncSheet` (`index.html`).
+1. **Duplicate-key crash fixed.** Mapping a name that was already mapped (or
+   the same name in another casing) blind-INSERTed and hit
+   `mh_item_map_name_uniq` (partial unique on `menu_name_norm where active`).
+   New `upsertItemMap(name,itemId,ratio)`: look up the row by `menu_name_norm`
+   (matches DB `mh_norm`), UPDATE it (set item, ratio, `active=true`) if found,
+   else INSERT `active=true`. Both the queue "Map & apply" (`saveMapping`) and
+   the proactive "Add mapping" (`saveManualMapping`) now upsert; dropped the
+   old "already mapped" hard block so re-mapping overwrites the one row.
+2. **Re-point on billing-app rename.** New `renameMapping(m,newName)` + a
+   "Change name" button and inline grouped picker on each existing mapping.
+   Drops any stale row under the target `menu_name_norm` first (so it never
+   trips the uniq index), updates this row's `menu_name` (+`active=true`), then
+   replays bills waiting under the new name.
+3. **Category-grouped menu picker.** `groupMenuByCat()` builds `<optgroup>`s by
+   the bill category each item sold under. Proactive add-mapping picker and the
+   rename picker both use it (free-text input kept for not-yet-sold names).
+Shared `replayWaiting(name)` helper replays logged-unmapped bills for a name.
+Verified: `node --check` on the inline script passes; could not runtime-test
+(sandbox blocks the React/htm CDN). PR opened, not merged.
+
 ### 2026-07-09 (later)
 - **Stock-sync config made dynamic, not hardcoded.** Categories tab now reads
   `mh_categories` instead of the fixed `SYNC_CATS` array; Mapping tab gained a

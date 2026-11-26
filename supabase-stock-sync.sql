@@ -38,10 +38,9 @@ create table if not exists public.mh_stock_categories (
   created_at timestamptz not null default now()
 );
 
--- Arm the initial four. Safe to re-run.
-insert into public.mh_stock_categories(name_norm)
-values ('starter'), ('cold drinks'), ('water bottle'), ('cigarette')
-on conflict (name_norm) do nothing;
+-- No seeding. The armed set is driven entirely from the UI (Stock sync ->
+-- Categories), populated from the live mh_menu categories. Hardcoding names
+-- here was the "Cold Drinks" vs "cold drinks" drift source and is removed.
 
 -- ---------------------------------------------------------------------------
 -- 2. Name normalization helper — one definition used by both the mapping
@@ -68,9 +67,22 @@ create table if not exists public.mh_item_map (
   created_at        timestamptz not null default now()
 );
 
--- One active mapping per menu name.
+-- Primary key is the billing menu item's stable id (mh_menu.id). A rename in
+-- the billing app changes mh_menu.name but not its id, so an id-keyed mapping
+-- survives renames and needs no "change name" step. menu_name is kept only as
+-- a display snapshot and as the fallback key for legacy rows / old bills whose
+-- line carries no id. Nullable so legacy name-only rows still validate.
+alter table public.mh_item_map
+  add column if not exists menu_item_id text;
+
+-- One active mapping per menu id (the id-keyed rows), and — for legacy rows
+-- that have no id yet — one active mapping per menu name. Split so an id-map
+-- and a name-map never block each other.
+drop index if exists public.mh_item_map_name_uniq;
+create unique index if not exists mh_item_map_menu_uniq
+  on public.mh_item_map (menu_item_id) where active and menu_item_id is not null;
 create unique index if not exists mh_item_map_name_uniq
-  on public.mh_item_map (menu_name_norm) where active;
+  on public.mh_item_map (menu_name_norm) where active and menu_item_id is null;
 
 -- ---------------------------------------------------------------------------
 -- 4. Deduction audit log — one row per bill line actually deducted.
@@ -81,7 +93,8 @@ create unique index if not exists mh_item_map_name_uniq
 -- ---------------------------------------------------------------------------
 create table if not exists public.mh_stock_sync_log (
   id                bigserial primary key,
-  bill_id           uuid        not null,
+  -- bill_id is TEXT: mh_customers.id is text in this database, not uuid.
+  bill_id           text        not null,
   menu_name         text        not null,
   menu_name_norm    text        not null,
   inventory_item_id uuid        references public.mh_inventory_items(id),
@@ -104,7 +117,11 @@ create index if not exists mh_stock_sync_log_bill_idx
 --    can prompt the user about unmapped items BEFORE applying.
 --    Read-only: safe to call as often as the UI likes.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_preview_bill_stock(p_bill_id uuid)
+-- mh_customers.id is text in this DB, so bill ids are text end to end. Drop any
+-- earlier uuid-typed overload first, or create-or-replace would leave it behind
+-- as a second signature and PostgREST could not tell which to call.
+drop function if exists public.mh_preview_bill_stock(uuid);
+create or replace function public.mh_preview_bill_stock(p_bill_id text)
 returns table (
   menu_name          text,
   category           text,
@@ -120,8 +137,12 @@ language sql stable security definer set search_path = public
 as $$
   with lines as (
     select
+      nullif(trim(li ->> 'id'), '')            as menu_id,
       nullif(trim(li ->> 'name'), '')          as menu_name,
-      nullif(trim(li ->> 'category'), '')      as category,
+      -- the billing app stores the line category under `cat`; keep `category`
+      -- as a fallback. Reading only `category` returned null, so every line was
+      -- dropped by the armed-category join and nothing ever deducted.
+      nullif(trim(coalesce(li ->> 'cat', li ->> 'category')), '') as category,
       coalesce((li ->> 'qty')::numeric, 0)     as bill_qty
     from public.mh_customers c
     cross join lateral jsonb_array_elements(
@@ -140,15 +161,34 @@ as $$
     ii.name                                    as inventory_name,
     m.qty_per_unit,
     round(l.bill_qty * coalesce(m.qty_per_unit, 0), 3) as qty_to_deduct,
-    (sl.id is not null)                        as already_applied,
+    -- "already applied" means the stock was actually DEDUCTED, i.e. an 'applied'
+    -- log row exists. A prior 'unmapped' row must NOT count: the line sold with
+    -- nothing to deduct from, and once it is mapped a replay has to deduct it
+    -- and upgrade that row. Testing only `sl.id is not null` wrongly treated an
+    -- unmapped line as done, so mapping it never took effect.
+    (sl.id is not null and sl.status = 'applied') as already_applied,
     (m.id is not null)                         as is_mapped
   from lines l
   -- only categories the admin screen has armed
   join public.mh_stock_categories cat
     on cat.name_norm = public.mh_norm(l.category)
-  left join public.mh_item_map m
-    on m.menu_name_norm = public.mh_norm(l.menu_name)
-   and m.active
+  -- Resolve the mapping for this line: match the stable menu id first, fall
+  -- back to the normalised name for legacy rows / old bills with no line id.
+  -- The lateral picks exactly ONE row, id-match preferred, so an id-map and a
+  -- legacy name-map for the same item can never both deduct.
+  left join lateral (
+    select mm.*
+    from public.mh_item_map mm
+    where mm.active
+      and (
+        (l.menu_id is not null and mm.menu_item_id = l.menu_id)
+        or (mm.menu_name_norm = public.mh_norm(l.menu_name))
+      )
+    order by (l.menu_id is not null and mm.menu_item_id = l.menu_id) desc,
+             (mm.menu_item_id is null) desc,
+             mm.id desc
+    limit 1
+  ) m on true
   left join public.mh_inventory_items ii
     on ii.id = m.inventory_item_id
   left join public.mh_stock_sync_log sl
@@ -171,7 +211,8 @@ $$;
 --    * Unmapped lines are recorded with status 'unmapped' and NOT deducted,
 --      so nothing fails silently — they show up in the reconcile view.
 -- ---------------------------------------------------------------------------
-create or replace function public.mh_apply_bill_stock(p_bill_id uuid)
+drop function if exists public.mh_apply_bill_stock(uuid);
+create or replace function public.mh_apply_bill_stock(p_bill_id text)
 returns table (applied integer, unmapped integer, skipped_reason text)
 language plpgsql security definer set search_path = public
 as $$
@@ -237,7 +278,18 @@ begin
     values
       (p_bill_id, r.menu_name, public.mh_norm(r.menu_name), r.inventory_item_id,
        r.bill_qty, r.qty_to_deduct, v_move_id, 'applied')
-    on conflict (bill_id, menu_name_norm) do nothing;
+    -- A line reaches here only when already_applied was false, so any existing
+    -- row is a stale 'unmapped' one (the item was mapped after it first sold).
+    -- Upgrade it in place to 'applied'; the `where status <> 'applied'` guard
+    -- keeps a genuinely-applied row untouched, so a retry still cannot
+    -- double-count.
+    on conflict (bill_id, menu_name_norm) do update set
+      inventory_item_id = excluded.inventory_item_id,
+      bill_qty          = excluded.bill_qty,
+      qty_deducted      = excluded.qty_deducted,
+      move_id           = excluded.move_id,
+      status            = 'applied'
+    where public.mh_stock_sync_log.status <> 'applied';
 
     v_applied := v_applied + 1;
   end loop;
@@ -299,9 +351,9 @@ create policy mh_item_map_admin_write on public.mh_item_map
 -- The log is written only by the SECURITY DEFINER function; no direct writes.
 revoke insert, update, delete on public.mh_stock_sync_log from anon, authenticated;
 
-revoke all on function public.mh_apply_bill_stock(uuid) from public, anon;
-grant execute on function public.mh_apply_bill_stock(uuid)   to authenticated;
-grant execute on function public.mh_preview_bill_stock(uuid) to authenticated;
+revoke all on function public.mh_apply_bill_stock(text) from public, anon;
+grant execute on function public.mh_apply_bill_stock(text)   to authenticated;
+grant execute on function public.mh_preview_bill_stock(text) to authenticated;
 
 -- ============================================================================
 --  BILLING APP CALL SEQUENCE (on settle)
