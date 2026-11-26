@@ -38,10 +38,9 @@ create table if not exists public.mh_stock_categories (
   created_at timestamptz not null default now()
 );
 
--- Arm the initial four. Safe to re-run.
-insert into public.mh_stock_categories(name_norm)
-values ('starter'), ('cold drinks'), ('water bottle'), ('cigarette')
-on conflict (name_norm) do nothing;
+-- No seeding. The armed set is driven entirely from the UI (Stock sync ->
+-- Categories), populated from the live mh_menu categories. Hardcoding names
+-- here was the "Cold Drinks" vs "cold drinks" drift source and is removed.
 
 -- ---------------------------------------------------------------------------
 -- 2. Name normalization helper — one definition used by both the mapping
@@ -68,9 +67,22 @@ create table if not exists public.mh_item_map (
   created_at        timestamptz not null default now()
 );
 
--- One active mapping per menu name.
+-- Primary key is the billing menu item's stable id (mh_menu.id). A rename in
+-- the billing app changes mh_menu.name but not its id, so an id-keyed mapping
+-- survives renames and needs no "change name" step. menu_name is kept only as
+-- a display snapshot and as the fallback key for legacy rows / old bills whose
+-- line carries no id. Nullable so legacy name-only rows still validate.
+alter table public.mh_item_map
+  add column if not exists menu_item_id text;
+
+-- One active mapping per menu id (the id-keyed rows), and — for legacy rows
+-- that have no id yet — one active mapping per menu name. Split so an id-map
+-- and a name-map never block each other.
+drop index if exists public.mh_item_map_name_uniq;
+create unique index if not exists mh_item_map_menu_uniq
+  on public.mh_item_map (menu_item_id) where active and menu_item_id is not null;
 create unique index if not exists mh_item_map_name_uniq
-  on public.mh_item_map (menu_name_norm) where active;
+  on public.mh_item_map (menu_name_norm) where active and menu_item_id is null;
 
 -- ---------------------------------------------------------------------------
 -- 4. Deduction audit log — one row per bill line actually deducted.
@@ -125,6 +137,7 @@ language sql stable security definer set search_path = public
 as $$
   with lines as (
     select
+      nullif(trim(li ->> 'id'), '')            as menu_id,
       nullif(trim(li ->> 'name'), '')          as menu_name,
       -- the billing app stores the line category under `cat`; keep `category`
       -- as a fallback. Reading only `category` returned null, so every line was
@@ -159,9 +172,23 @@ as $$
   -- only categories the admin screen has armed
   join public.mh_stock_categories cat
     on cat.name_norm = public.mh_norm(l.category)
-  left join public.mh_item_map m
-    on m.menu_name_norm = public.mh_norm(l.menu_name)
-   and m.active
+  -- Resolve the mapping for this line: match the stable menu id first, fall
+  -- back to the normalised name for legacy rows / old bills with no line id.
+  -- The lateral picks exactly ONE row, id-match preferred, so an id-map and a
+  -- legacy name-map for the same item can never both deduct.
+  left join lateral (
+    select mm.*
+    from public.mh_item_map mm
+    where mm.active
+      and (
+        (l.menu_id is not null and mm.menu_item_id = l.menu_id)
+        or (mm.menu_name_norm = public.mh_norm(l.menu_name))
+      )
+    order by (l.menu_id is not null and mm.menu_item_id = l.menu_id) desc,
+             (mm.menu_item_id is null) desc,
+             mm.id desc
+    limit 1
+  ) m on true
   left join public.mh_inventory_items ii
     on ii.id = m.inventory_item_id
   left join public.mh_stock_sync_log sl

@@ -2295,58 +2295,65 @@
     const [allCats,setAllCats]=useState([]);       // every category from mh_categories
     const [catErr,setCatErr]=useState("");         // why mh_categories couldn't be read
     const [seenCats,setSeenCats]=useState([]);     // categories observed on real bills
-    const [billLines,setBillLines]=useState({});   // bill id -> [{name,category}]
-    const [menuRows,setMenuRows]=useState([]);     // {name, category} seen on settled bills
-    const [draft,setDraft]=useState({});           // menu_name -> {item_id, ratio}
-    const [manual,setManual]=useState({menu:"",item_id:"",ratio:"1"});
+    const [billLines,setBillLines]=useState({});   // bill id -> [{id,name,category}]
+    const [menuRows,setMenuRows]=useState([]);     // live mh_menu: {id,name,category,available,sort_order}
+    const [draft,setDraft]=useState({});           // gap menu_name -> {item_id, ratio}
+    const [manual,setManual]=useState({menu_id:"",menu:"",item_id:"",ratio:"1"});
     const [renaming,setRenaming]=useState("");      // mapping id being re-pointed
     const [renameTo,setRenameTo]=useState("");      // chosen current menu name
     const [err,setErr]=useState("");
 
     const load=useCallback(async()=>{
       try{
-        const [p,u,m,c]=await Promise.all([
+        const [p,u,m,c,mn]=await Promise.all([
           sb.from("mh_stock_sync_pending").select("*").order("bill_date",{ascending:false}).limit(200),
           sb.from("mh_stock_sync_log").select("*").eq("status","unmapped").order("created_at",{ascending:false}),
           sb.from("mh_item_map").select("*").order("menu_name"),
-          sb.from("mh_stock_categories").select("*")
+          sb.from("mh_stock_categories").select("*"),
+          // The picker is driven LIVE from the billing app's menu table, so a
+          // rename there shows here immediately and nothing is derived from past
+          // bills. id is the stable key the mapping is stored against.
+          sb.from("mh_menu").select("id,name,cat,available,sort_order")
         ]);
         if(p.error) throw p.error;
         setPending(p.data||[]); setUnmapped(u.data||[]); setMaps(m.data||[]); setCats(c.data||[]);
         setErr("");
 
-        // Category list comes from the billing app's own table — never hardcoded.
-        // Keep the real error: "missing table" and "RLS denied" need different
-        // fixes, and swallowing it leaves nothing to diagnose.
+        const menu=(mn&&!mn.error&&mn.data?mn.data:[]).map(r=>({
+          id:String(r.id), name:String(r.name||"").trim(),
+          category:String((r.cat!=null?r.cat:"")||"").trim(),
+          available:r.available!==false, sort_order:num(r.sort_order) }))
+          .filter(r=> r.id && r.name);
+        menu.sort((a,b)=> (a.sort_order-b.sort_order)||a.name.localeCompare(b.name));
+        setMenuRows(menu);
+
+        // mh_categories (billing app's own category master) still feeds the
+        // arming pick-list. Categories also come from mh_menu.cat below.
         const cc=await sb.from("mh_categories").select("*");
         if(!cc.error && cc.data){ setAllCats(cc.data); setCatErr(""); }
         else { setAllCats([]); setCatErr((cc.error&&cc.error.message)||"unknown error"); }
 
-        // Menu names for the pairing picker, and each line's category. There is
-        // no menu table in this schema — the only place either exists is the
-        // items JSON on settled bills, so both are derived from there. That also
-        // gives a real fallback for the category list when mh_categories is
-        // unreadable, and lets the pending list tell which bills are actionable.
+        // Categories observed on the live menu — the dynamic source for the
+        // arming list (no hardcoded fallback).
+        const mcats={}; menu.forEach(r=>{ if(r.category){ const ck=normName(r.category); if(!mcats[ck]) mcats[ck]=r.category; } });
+        setSeenCats(Object.values(mcats).sort((a,b)=>a.localeCompare(b)));
+
+        // Bills are still read — but ONLY to tell which pending bills actually
+        // have a line in an armed category (the actionable/inert split). Menu
+        // names are NOT derived from bills any more. Keep the line id so the
+        // split and any id-based checks line up with the menu table.
         const bb=await sb.from("mh_customers").select("id,items,status").eq("status","settled").limit(500);
         if(!bb.error && bb.data){
-          const seen={}, catSeen={}, byBill={};
+          const byBill={};
           bb.data.forEach(b=>{
             let its=b.items;
             if(typeof its==="string"){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
-            const lines=(Array.isArray(its)?its:[]).map(li=>({
+            byBill[String(b.id)]=(Array.isArray(its)?its:[]).map(li=>({
+              id:String((li&&li.id)||"").trim(),
               name:String((li&&li.name)||"").trim(),
-              // billing app stores the line category under `cat`; `category` is
-              // a fallback. Reading only `category` left every line uncategorised.
               category:String((li&&(li.cat!=null?li.cat:li.category))||"").trim() }));
-            byBill[String(b.id)]=lines;
-            lines.forEach(li=>{
-              if(li.name){ const k=normName(li.name); if(!seen[k]) seen[k]={ name:li.name, category:li.category }; }
-              if(li.category){ const ck=normName(li.category); if(!catSeen[ck]) catSeen[ck]=li.category; }
-            });
           });
-          setMenuRows(Object.values(seen).sort((a,b)=>a.name.localeCompare(b.name)));
           setBillLines(byBill);
-          setSeenCats(Object.values(catSeen).sort((a,b)=>a.localeCompare(b)));
         }
       }catch(e){
         // Most likely cause by far: the stock-sync migration hasn't been run.
@@ -2363,30 +2370,47 @@
       return (data && data[0]) || {applied:0,unmapped:0,skipped_reason:null};
     }
 
-    // Write a mapping for a menu name WITHOUT ever blind-inserting: a blind
-    // insert collides with mh_item_map_name_uniq (the partial unique index on
-    // menu_name_norm where active) whenever that name — or the same name in a
-    // different casing — is already mapped. So look the row up by its normalized
-    // name first and overwrite it, re-arming it if it had been turned off; only
-    // insert when nothing matches. One row per menu name, re-mapping overwrites.
-    async function upsertItemMap(menuName,itemId,ratio){
-      const norm=normName(menuName);
-      const q=await sb.from("mh_item_map").select("id")
-        .eq("menu_name_norm",norm).order("active",{ascending:false}).limit(1);
-      if(q.error) throw new Error(q.error.message);
-      const existing=q.data&&q.data[0];
+    // Write a mapping keyed on the stable menu id. Never blind-insert: find an
+    // existing row by menu_item_id first (the id-keyed row), then by normalized
+    // name (legacy rows / items with no id), and overwrite it — re-arming it if
+    // it was turned off. Store menu_item_id plus the current name as a display
+    // snapshot. One active row per menu item; re-mapping overwrites it, so a
+    // rename in the billing app never needs a separate "change name" step.
+    async function upsertItemMap(menuId,menuName,itemId,ratio){
+      let existing=null;
+      if(menuId){
+        const q=await sb.from("mh_item_map").select("id").eq("menu_item_id",menuId)
+          .order("active",{ascending:false}).limit(1);
+        if(q.error) throw new Error(q.error.message);
+        existing=q.data&&q.data[0];
+      }
+      if(!existing){
+        const q=await sb.from("mh_item_map").select("id").eq("menu_name_norm",normName(menuName))
+          .order("active",{ascending:false}).limit(1);
+        if(q.error) throw new Error(q.error.message);
+        existing=q.data&&q.data[0];
+      }
+      const row={ menu_item_id:menuId||null, menu_name:menuName,
+        inventory_item_id:itemId, qty_per_unit:ratio, active:true };
       if(existing){
-        const { error }=await sb.from("mh_item_map").update({
-          menu_name:menuName, inventory_item_id:itemId, qty_per_unit:ratio, active:true
-        }).eq("id",existing.id);
+        const { error }=await sb.from("mh_item_map").update(row).eq("id",existing.id);
         if(error) throw new Error(error.message);
       }else{
-        const { error }=await sb.from("mh_item_map").insert({
-          menu_name:menuName, inventory_item_id:itemId, qty_per_unit:ratio,
-          active:true, created_by:(me&&me.email)||null });
+        const { error }=await sb.from("mh_item_map").insert({...row, created_by:(me&&me.email)||null });
         if(error) throw new Error(error.message);
       }
     }
+
+    // Resolve a menu name (from a bill/log row) or id to the live mh_menu row.
+    const menuById=useMemo(()=>{ const h={}; menuRows.forEach(r=>{ h[r.id]=r; }); return h; },[menuRows]);
+    const menuByNorm=useMemo(()=>{ const h={}; menuRows.forEach(r=>{ const k=normName(r.name); if(!h[k]) h[k]=r; }); return h; },[menuRows]);
+    // Which menu items already have an active mapping — by id, and (for legacy
+    // rows with no id) by name — so the picker never offers an already-paired one.
+    const mappedIds=useMemo(()=> new Set(maps.filter(m=>m.active&&m.menu_item_id).map(m=>String(m.menu_item_id))),[maps]);
+    const legacyNorms=useMemo(()=> new Set(maps.filter(m=>m.active&&!m.menu_item_id).map(m=>normName(m.menu_name))),[maps]);
+    // The current display name of a mapping: the live menu name if the id still
+    // resolves (rename-proof), else the stored snapshot.
+    const mapName=(m)=>{ const r=m&&m.menu_item_id&&menuById[String(m.menu_item_id)]; return (r&&r.name)||((m&&m.menu_name)||""); };
 
     // Replay every bill currently waiting (logged unmapped) under a menu name,
     // so a mapping that was just created or re-pointed applies straight away.
@@ -2439,13 +2463,14 @@
       return Object.values(g).sort((a,b)=> b.qty-a.qty);
     },[unmapped]);
 
-    // A gap whose name is already mapped just needs its waiting bills replayed —
-    // the item was mapped after it first sold, so no new mapping is required,
-    // only an apply. (Needs the DB fix that stops a stale 'unmapped' log row
-    // from masking the line as already applied.)
-    const mapByNorm=useMemo(()=>{
-      const h={}; maps.forEach(m=>{ h[normName(m.menu_name)]=m; }); return h;
-    },[maps]);
+    // A gap whose item is already mapped just needs its waiting bills replayed.
+    // Match by the live menu id first (resolving the waiting name to its menu
+    // row), then by name for legacy maps.
+    function gapMappedRow(gap){
+      const mrow=menuByNorm[normName(gap.menu_name)];
+      if(mrow){ const byId=maps.find(m=>m.active&&String(m.menu_item_id)===mrow.id); if(byId) return byId; }
+      return maps.find(m=>m.active&&normName(m.menu_name)===normName(gap.menu_name))||null;
+    }
     async function applyGapNow(gap){
       setBusy(gap.menu_name);
       try{
@@ -2465,7 +2490,11 @@
       if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
       setBusy(gap.menu_name);
       try{
-        await upsertItemMap(gap.menu_name,itemId,ratio);
+        // Resolve the waiting bill name to its live menu row so the mapping is
+        // stored against the stable id; fall back to the name if the item is
+        // gone from the menu.
+        const mrow=menuByNorm[normName(gap.menu_name)];
+        await upsertItemMap(mrow?mrow.id:null, mrow?mrow.name:gap.menu_name, itemId, ratio);
         let applied=0;
         for(const billId of gap.bills){
           try{ const r=await applyBill(billId); applied+=r.applied||0; }catch(e){}
@@ -2477,12 +2506,11 @@
       setBusy("");
     }
 
-    // Menu names seen on bills that don't already have a mapping — the picker
-    // shouldn't offer something already paired.
+    // Live menu items that don't already have a mapping — by id, or by name for
+    // legacy maps — so the picker never offers an already-paired one.
     const unmappedMenuNames=useMemo(()=>{
-      const have=new Set(maps.map(m=> normName(m.menu_name)));
-      return menuRows.filter(r=> !have.has(normName(r.name)));
-    },[menuRows,maps]);
+      return menuRows.filter(r=> !mappedIds.has(r.id) && !legacyNorms.has(normName(r.name)));
+    },[menuRows,mappedIds,legacyNorms]);
 
     // Category-grouped options for the pickers (change 3). The proactive "Add a
     // mapping" picker offers only names not already mapped; the rename picker
@@ -2494,52 +2522,58 @@
     // Proactive pairing: same insert as the queue flow, then replay anything
     // already waiting on that name so a back-dated mapping still applies.
     async function saveManualMapping(){
-      const name=manual.menu.trim(), ratio=num(manual.ratio!==""?manual.ratio:1);
+      // Prefer the picked menu row (stable id + current name); fall back to a
+      // typed name for an item not in the menu table.
+      const mrow=manual.menu_id?menuById[manual.menu_id]:menuByNorm[normName(manual.menu.trim())];
+      const menuId=mrow?mrow.id:null;
+      const name=(mrow?mrow.name:manual.menu.trim());
+      const ratio=num(manual.ratio!==""?manual.ratio:1);
       if(!name || !manual.item_id) return;
       if(!(ratio>0)){ toastErr("Ratio must be greater than zero"); return; }
-      // No "already mapped" block: re-pairing an existing name overwrites its
-      // single row (upsertItemMap) instead of blind-inserting into a collision.
-      const already=maps.some(m=> normName(m.menu_name)===normName(name));
+      const already=menuId?mappedIds.has(menuId):maps.some(m=> normName(m.menu_name)===normName(name));
       setBusy("manual");
       try{
-        await upsertItemMap(name,manual.item_id,ratio);
+        await upsertItemMap(menuId,name,manual.item_id,ratio);
         const applied=await replayWaiting(name);
         toast(`${already?"Re-mapped":"Mapped"} "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
-        setManual({menu:"",item_id:"",ratio:"1"});
+        setManual({menu_id:"",menu:"",item_id:"",ratio:"1"});
         await load(); onChanged && onChanged();
       }catch(e){ toastErr(e.message||"Couldn't save mapping"); }
       setBusy("");
     }
 
-    // Re-point an existing mapping at a corrected current menu name (the billing
-    // app renamed the item). The target name may already have a stale row, which
-    // would trip mh_item_map_name_uniq — drop any such row first, then move this
-    // mapping onto the new name and replay bills that were waiting under it.
-    async function renameMapping(m,newName){
-      const name=String(newName||"").trim();
-      if(!name){ toastErr("Pick the correct current name"); return; }
-      if(normName(name)===normName(m.menu_name)){ setRenaming(""); setRenameTo(""); return; }
+    // Re-point an existing mapping at a chosen live menu item (by stable id).
+    // Used to link a legacy name-only mapping to the menu, or to move a mapping
+    // onto a different item. Drops any active row that would clash on the
+    // id-unique or name-unique index first, then replays waiting bills.
+    async function renameMapping(m,menuId){
+      const mrow=menuById[menuId];
+      if(!mrow){ toastErr("Pick a menu item"); return; }
       setBusy(m.id);
       try{
-        const norm=normName(name);
-        const dup=await sb.from("mh_item_map").select("id").eq("menu_name_norm",norm).neq("id",m.id);
-        if(dup.error) throw new Error(dup.error.message);
-        for(const d of (dup.data||[])){
+        const clash=await sb.from("mh_item_map").select("id,menu_item_id,menu_name_norm")
+          .eq("active",true).neq("id",m.id);
+        if(clash.error) throw new Error(clash.error.message);
+        const kill=(clash.data||[]).filter(d=>
+          String(d.menu_item_id||"")===mrow.id ||
+          (!d.menu_item_id && d.menu_name_norm===normName(mrow.name)));
+        for(const d of kill){
           const del=await sb.from("mh_item_map").delete().eq("id",d.id);
           if(del.error) throw new Error(del.error.message);
         }
-        const { error }=await sb.from("mh_item_map").update({ menu_name:name, active:true }).eq("id",m.id);
+        const { error }=await sb.from("mh_item_map")
+          .update({ menu_item_id:mrow.id, menu_name:mrow.name, active:true }).eq("id",m.id);
         if(error) throw new Error(error.message);
-        const applied=await replayWaiting(name);
-        toast(`Mapping now points at "${name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
+        const applied=await replayWaiting(mrow.name);
+        toast(`Mapping now points at "${mrow.name}"${applied?` — ${applied} waiting deduction${applied===1?"":"s"} applied`:""}`);
         setRenaming(""); setRenameTo("");
         await load(); onChanged && onChanged();
-      }catch(e){ toastErr(e.message||"Couldn't change name"); }
+      }catch(e){ toastErr(e.message||"Couldn't re-point"); }
       setBusy("");
     }
 
     async function removeMapping(m){
-      if(!confirm(`Remove mapping "${m.menu_name}"? Future bills will log it as unmapped until it's mapped again.`)) return;
+      if(!confirm(`Remove mapping "${mapName(m)}"? Future bills will log it as unmapped until it's mapped again.`)) return;
       setBusy(m.id);
       try{
         const { error } = await sb.from("mh_item_map").delete().eq("id",m.id);
@@ -2550,17 +2584,17 @@
     }
 
     const armed=useMemo(()=> new Set(cats.map(c=>c.name_norm)),[cats]);
-    // Categories to show = everything in mh_categories, plus any already armed
-    // whose name no longer appears there (renamed/deleted upstream) so it stays
-    // visible and can be turned off. Falls back to the legacy list if the table
-    // couldn't be read at all.
+    // Categories to show, fully dynamic — no hardcoded list. The live menu
+    // (mh_menu.cat, via seenCats) and the billing category master
+    // (mh_categories, via allCats) both feed it, plus any already-armed name
+    // that no longer appears in either (renamed/removed upstream) so it stays
+    // visible and can be turned off.
     const catList=useMemo(()=>{
       const out=[], seen=new Set();
       const push=(label,orphan)=>{ const norm=normName(label); if(!norm||seen.has(norm)) return; seen.add(norm); out.push({norm,label,orphan:!!orphan}); };
+      seenCats.forEach(c=> push(c));                 // live menu categories
       if(allCats.length) catsFromRows(allCats).forEach(c=> push(c));
-      else if(seenCats.length) seenCats.forEach(c=> push(c));   // real categories off real bills
-      else SYNC_CATS_FALLBACK.forEach(c=> push(c));
-      cats.forEach(c=> push(c.name_norm, true));
+      cats.forEach(c=> push(c.name_norm, true));     // armed orphans
       return out.sort((a,b)=> a.label.localeCompare(b.label));
     },[allCats,seenCats,cats]);
 
@@ -2639,8 +2673,8 @@
                   <span class="pill low">${num(g.qty)} sold untracked</span>
                 </div>
                 <div class="tiny muted" style=${{marginTop:2}}>${g.bills.size} bill${g.bills.size===1?"":"s"} waiting · last ${fmtDT(g.last)}</div>
-                ${mapByNorm[normName(g.menu_name)] ? html`<div>
-                  <div class="tiny muted" style=${{marginTop:6}}>Already mapped → ${itemName(mapByNorm[normName(g.menu_name)].inventory_item_id)}. These bills just need applying.</div>
+                ${gapMappedRow(g) ? html`<div>
+                  <div class="tiny muted" style=${{marginTop:6}}>Already mapped → ${itemName(gapMappedRow(g).inventory_item_id)}. These bills just need applying.</div>
                   <div class="row" style=${{gap:8,marginTop:10,flexWrap:"wrap"}}>
                     <button class="btn sm" disabled=${busy===g.menu_name}
                       onClick=${()=>applyGapNow(g)}>${busy===g.menu_name?"Applying…":"Apply now"}</button>
@@ -2665,17 +2699,17 @@
 
         <div class="card" style=${{marginTop:14}}><div class="hd"><h3>Add a mapping</h3></div>
           <div class="pad">
-            <p class="tiny muted" style=${{margin:"0 0 10px"}}>Pair a menu item up front, before it is ever sold unmapped. Names come from items seen on settled bills; type one in if it hasn't sold yet.</p>
+            <p class="tiny muted" style=${{margin:"0 0 10px"}}>Pair a menu item up front, before it is ever sold unmapped. Items come live from the billing menu, grouped by category; type a name only for something not in the menu.</p>
             <label>Menu item</label>
-            <select value=${addMenuGroups.some(gr=>gr.items.some(it=>it.name===manual.menu))?manual.menu:""}
-              onChange=${e=> e.target.value && setManual(o=>({...o,menu:e.target.value}))}>
+            <select value=${manual.menu_id||""}
+              onChange=${e=>{ const id=e.target.value; const r=id?menuById[id]:null; setManual(o=>({...o,menu_id:id,menu:r?r.name:o.menu})); }}>
               <option value="">Pick a menu item by category…</option>
               ${addMenuGroups.map(gr=> html`<optgroup key=${gr.cat} label=${gr.cat}>
-                ${gr.items.map(it=> html`<option key=${it.name} value=${it.name}>${it.name}</option>`)}
+                ${gr.items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}</option>`)}
               </optgroup>`)}
             </select>
-            <input value=${manual.menu} placeholder="…or type a new name"
-              onChange=${e=>setManual(o=>({...o,menu:e.target.value}))}/>
+            <input value=${manual.menu_id?"":manual.menu} placeholder="…or type a name not in the menu"
+              onChange=${e=>setManual(o=>({...o,menu:e.target.value,menu_id:""}))}/>
             <label>Deduct from</label>
             <select value=${manual.item_id} onChange=${e=>setManual(o=>({...o,item_id:e.target.value}))}>
               <option value="">Pick an inventory item…</option>
@@ -2696,23 +2730,23 @@
             : maps.map(m=> html`<div key=${m.id}>
                 <div class="entry">
                   <div class="grow">
-                    <div><b class="ell">${m.menu_name}</b></div>
+                    <div><b class="ell">${mapName(m)}</b>${m.menu_item_id?"":html` <span class="tiny muted">(not linked to menu)</span>`}</div>
                     <div class="tiny muted">→ ${itemName(m.inventory_item_id)}${num(m.qty_per_unit)!==1?" × "+num(m.qty_per_unit):""}</div>
                   </div>
                   <button class="btn ghost sm" disabled=${!!busy}
-                    onClick=${()=>{ setRenaming(renaming===m.id?"":m.id); setRenameTo(""); }}>${renaming===m.id?"Cancel":"Change name"}</button>
+                    onClick=${()=>{ setRenaming(renaming===m.id?"":m.id); setRenameTo(""); }}>${renaming===m.id?"Cancel":(m.menu_item_id?"Re-point":"Link to menu")}</button>
                   <button class="btn ghost sm" disabled=${busy===m.id}
                     onClick=${()=>removeMapping(m)}><${Icon} name="x" size=${15}/></button>
                 </div>
                 ${renaming===m.id && html`<div class="card" style=${{margin:"0 0 10px",background:"var(--bg2,#f6f6f6)"}}>
                   <div class="pad">
-                    <p class="tiny muted" style=${{margin:"0 0 8px"}}>Renamed in the billing app? Select the correct current name to re-point this mapping and enable inventory control. The old name stops deducting; bills waiting under the new name apply now.</p>
+                    <p class="tiny muted" style=${{margin:"0 0 8px"}}>Point this mapping at a live menu item. Keyed on the menu item's id, so a later rename in the billing app keeps working with no further action. Bills waiting under it apply now.</p>
                     <div class="row" style=${{gap:8,flexWrap:"wrap"}}>
                       <select style=${{flex:"1 1 160px"}} value=${renameTo}
                         onChange=${e=>setRenameTo(e.target.value)}>
-                        <option value="">Select correct name…</option>
+                        <option value="">Select menu item…</option>
                         ${allMenuGroups.map(gr=> html`<optgroup key=${gr.cat} label=${gr.cat}>
-                          ${gr.items.map(it=> html`<option key=${it.name} value=${it.name}>${it.name}</option>`)}
+                          ${gr.items.map(it=> html`<option key=${it.id} value=${it.id}>${it.name}</option>`)}
                         </optgroup>`)}
                       </select>
                       <button class="btn sm" disabled=${busy===m.id||!renameTo}

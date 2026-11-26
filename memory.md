@@ -164,6 +164,27 @@ or derive qty from the sum of `mh_stock_moves`.
 
 ## ACTIONS TAKEN (newest first)
 
+### 2026-11-26 — Mapping driven by live mh_menu, keyed on stable menu id
+Billing app HAS a menu table `mh_menu (id text, cat, name, price, available,
+sort_order, image_data)`. Bill `items` lines carry that `id`. Reworked
+stock-sync to be fully menu-driven, rename-proof, zero seeding:
+- `mh_item_map` + `menu_item_id text` (nullable). Uniqueness split: id-maps
+  unique on `menu_item_id where active`, legacy name-maps unique on
+  `menu_name_norm where active and menu_item_id is null`.
+- `mh_preview_bill_stock`: resolve each line via a lateral that matches
+  `menu_item_id = line.id` FIRST, falls back to `mh_norm(name)`; id-match
+  preferred so an id-map and a legacy name-map never both deduct. Reads line
+  `id` from the JSON. A billing rename changes `mh_menu.name` not `id`, so an
+  id-keyed mapping keeps deducting with no "change name" step.
+- Removed the hardcoded `mh_stock_categories` seed. Arming list now dynamic:
+  `mh_menu.cat` (distinct) ∪ `mh_categories` ∪ armed-orphans.
+- Client (`StockSyncSheet`): picker fetches `mh_menu` live (grouped by cat,
+  value = id), stores `menu_item_id` + current name snapshot; existing mappings
+  show the LIVE name via id and a "Link to menu / Re-point" action; menu names
+  no longer derived from settled bills (bills read only for pending split).
+Legacy name-only maps (e.g. omlet) keep working via the name fallback and can
+be linked to the menu from the UI. Same PR #20.
+
 ### 2026-11-25 (later 2) — Bill line category key is `cat`, not `category`
 Real blocker behind omlet never deducting. Billing app writes each
 `mh_customers.items` line as `{"id","cat","qty","name","price","times"[]}` —
